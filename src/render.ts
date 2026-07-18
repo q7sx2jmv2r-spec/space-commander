@@ -3,10 +3,25 @@
 // is exactly one mapping in the codebase.
 
 import { GameState, Fleet, Owner, WORLD_W, WORLD_H } from "./sim";
+import { SIZE_RADIUS } from "./config";
 
 const BG = "#0b0e1a";
-const OWNER_FILL: Record<Owner, string> = { 0: "#3a4060", 1: "#1d4d80", 2: "#802c2c" };
-const OWNER_STROKE: Record<Owner, string> = { 0: "#8b93b8", 1: "#4da6ff", 2: "#ff5d5d" };
+// ai2/ai3 colors are reserved for QUA-123; distinguishable by brightness as
+// well as hue.
+const OWNER_FILL: Record<Owner, string> = {
+  neutral: "#3a4060",
+  player: "#1d4d80",
+  ai1: "#802c2c",
+  ai2: "#805a1d",
+  ai3: "#5a2c80",
+};
+const OWNER_STROKE: Record<Owner, string> = {
+  neutral: "#8b93b8",
+  player: "#4da6ff",
+  ai1: "#ff5d5d",
+  ai2: "#ffb84d",
+  ai3: "#c05dff",
+};
 
 export interface WorldTransform {
   scale: number;
@@ -64,11 +79,12 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
 
   function drawPlanets(curr: GameState, selection: ReadonlySet<number>): void {
     for (const p of curr.planets) {
+      const r = SIZE_RADIUS[p.size];
       g.fillStyle = OWNER_FILL[p.owner];
       g.strokeStyle = OWNER_STROKE[p.owner];
       g.lineWidth = 3;
       g.beginPath();
-      g.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      g.arc(p.x, p.y, r, 0, Math.PI * 2);
       g.fill();
       g.stroke();
 
@@ -76,16 +92,16 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
         g.strokeStyle = "#ffffff";
         g.lineWidth = 4;
         g.beginPath();
-        g.arc(p.x, p.y, p.r + 8, 0, Math.PI * 2);
+        g.arc(p.x, p.y, r + 8, 0, Math.PI * 2);
         g.stroke();
       }
 
-      const fontSize = Math.max(22, p.r * 0.7);
+      const fontSize = Math.max(22, r * 0.7);
       g.fillStyle = "#ffffff";
       g.font = `bold ${fontSize}px system-ui, sans-serif`;
       g.textAlign = "center";
       g.textBaseline = "middle";
-      g.fillText(String(Math.floor(p.ships)), p.x, p.y);
+      g.fillText(String(Math.floor(p.garrison)), p.x, p.y);
     }
   }
 
@@ -94,9 +110,14 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     for (const f of prev.fleets) prevById.set(f.id, f);
 
     for (const f of curr.fleets) {
+      // Interpolate progress between ticks, then derive the position from the
+      // (static) origin/dest planet centers — exact, no positional drift.
       const pf = prevById.get(f.id);
-      const x = pf ? pf.x + (f.x - pf.x) * alpha : f.x;
-      const y = pf ? pf.y + (f.y - pf.y) * alpha : f.y;
+      const p = pf ? pf.progress + (f.progress - pf.progress) * alpha : f.progress;
+      const origin = curr.planets[f.originId]!;
+      const dest = curr.planets[f.destId]!;
+      const x = origin.x + (dest.x - origin.x) * p;
+      const y = origin.y + (dest.y - origin.y) * p;
       const r = Math.min(16, 6 + 2 * Math.sqrt(f.ships));
 
       g.fillStyle = OWNER_STROKE[f.owner];

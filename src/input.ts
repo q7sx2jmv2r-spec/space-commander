@@ -3,6 +3,7 @@
 // tick boundaries, which keeps the sim deterministic and replay-ready.
 
 import { Command, GameState, Planet, PLAYER } from "./sim";
+import { SIZE_RADIUS } from "./config";
 import { screenToWorld } from "./render";
 
 /** Minimum tap radius in world units, so small planets stay tappable. */
@@ -18,7 +19,7 @@ function hitTest(planets: readonly Planet[], wx: number, wy: number): Planet | n
   let bestDist = Infinity;
   for (const p of planets) {
     const d = Math.hypot(p.x - wx, p.y - wy);
-    if (d <= Math.max(p.r, MIN_HIT_RADIUS) && d < bestDist) {
+    if (d <= Math.max(SIZE_RADIUS[p.size], MIN_HIT_RADIUS) && d < bestDist) {
       best = p;
       bestDist = d;
     }

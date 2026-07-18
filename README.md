@@ -4,7 +4,7 @@ A mobile planet-capture RTS tech demo (Galcon-style). TypeScript + HTML5 Canvas 
 
 ## How to play
 
-You are blue (bottom planet); the AI is red (top). Tap your planets to select them (tap again to deselect), then tap any enemy or neutral planet to send 50% of each selected garrison. Owned planets produce ships over time proportional to their size; a fleet that arrives at a hostile planet trades ships 1:1 with the garrison and captures it if any attackers remain. Take every red planet to win. Games are seeded and reproducible — share the URL (`?seed=`) to share the exact same map and AI behavior.
+You are blue (bottom planet); the AI is red (top). Tap your planets to select them (tap again to deselect), then tap any enemy or neutral planet to send 50% of each selected garrison. Owned planets produce ships by size class (small 0.5, medium 1.0, large 1.5 ships/sec; neutrals produce nothing); fleets cross the full map width in 5 seconds. A fleet arriving at a hostile planet trades ships 1:1 with the garrison and captures it if any attackers remain. Take every red planet to win. Games are seeded and reproducible — share the URL (`?seed=`) to share the exact same map and AI behavior.
 
 ## Prerequisites
 
@@ -34,10 +34,15 @@ Pushing to `main` triggers `.github/workflows/deploy.yml`, which builds the proj
 ## Testing
 
 ```sh
-npm run test:determinism
+npm test
 ```
 
-Bundles the simulation (`src/test/determinism.ts`) and runs it under plain node: same seed twice for 5000 ticks must produce bit-identical JSON state, different seeds must diverge, and a mid-game `JSON.parse(JSON.stringify(...))` snapshot must not change the future. Running under node also proves the sim modules are DOM-free.
+Runs both suites under plain node (esbuild-bundled, zero test dependencies) — which also proves the sim modules are DOM-free:
+
+- `npm run test:sim` — QUA-119 engine tests: production accrual per size, fleet travel timing, capture flip, failed attack and exact-tie, reinforcement, simultaneous-arrival fleet-id ordering, JSON round-trip, `sendFleet` semantics, plus the 100-tick acceptance scenario with exact expected numbers.
+- `npm run test:determinism` — same seed twice for 5000 ticks must produce bit-identical JSON state, different seeds must diverge, and a mid-game `JSON.parse(JSON.stringify(...))` snapshot must not change the future.
+
+CI (`.github/workflows/ci.yml`) runs typecheck + both suites on every push; the deploy workflow runs them before building, so `main` never deploys red. All gameplay numbers live in `src/config.ts`.
 
 ## Architecture notes
 

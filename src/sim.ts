@@ -1,47 +1,47 @@
-// Deterministic game simulation. This module must stay DOM-free (it runs
-// under plain node in the determinism test) and must never touch Math.random —
-// all randomness flows through the RngState inside GameState, and draw order
-// is part of the determinism contract.
+// Deterministic game simulation (QUA-119). This module must stay DOM-free
+// (it runs under plain node in the test suite) and must never touch
+// Math.random or Date.now — all randomness flows through the RngState inside
+// GameState, and draw order is part of the determinism contract.
 
+import {
+  Owner,
+  Size,
+  TICK_DT,
+  PRODUCTION,
+  SHIP_SPEED,
+  SEND_FRACTION,
+  AI_PERIOD,
+  AI_MIN_GARRISON,
+  AI_DIST_DIVISOR,
+} from "./config";
 import { RngState, createRng, nextFloat } from "./rng";
 import { generatePlanets } from "./mapgen";
 
-export const TICK_RATE = 60;
-export const TICK_DT = 1 / TICK_RATE;
+export type { Owner, Size };
+export { TICK_DT, TICK_RATE, WORLD_W, WORLD_H } from "./config";
 
-/** Logical world size (portrait). Rendering scales this to fit the screen;
- * screen size never affects simulation results. */
-export const WORLD_W = 1000;
-export const WORLD_H = 1600;
-
-export const NEUTRAL = 0;
-export const PLAYER = 1;
-export const AI = 2;
-export type Owner = 0 | 1 | 2;
-
-// Balance constants — first-guess numbers, tune after playtesting.
-export const FLEET_SPEED = 180; // world units/sec
-export const PROD_DIVISOR = 20; // owned planet produces r/PROD_DIVISOR ships/sec
-export const SEND_FRACTION = 0.5;
-export const AI_PERIOD = 120; // ticks between AI decisions (2s)
-export const AI_MIN_GARRISON = 20;
+export const NEUTRAL: Owner = "neutral";
+export const PLAYER: Owner = "player";
+export const AI1: Owner = "ai1";
 
 export interface Planet {
   id: number; // index in planets[]; stable for the whole game
   x: number;
   y: number;
-  r: number;
+  size: Size;
   owner: Owner;
-  ships: number; // fractional accumulator; use Math.floor for display/sending
+  garrison: number; // fractional internally; use Math.floor for display/sending
 }
 
 export interface Fleet {
   id: number;
-  owner: Owner; // PLAYER or AI only
+  owner: Owner;
   ships: number; // integer
-  x: number;
-  y: number;
-  targetId: number;
+  originId: number;
+  destId: number;
+  /** 0..1 along the origin→destination center line. Position is derived, not
+   * stored: origin/dest planets never move, so the lerp is exact. */
+  progress: number;
 }
 
 export interface SendCommand {
@@ -85,50 +85,116 @@ function dist(ax: number, ay: number, bx: number, by: number): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-/** Validate and apply a send command. Invalid commands and invalid source
- * entries are silently dropped — stale UI input must never throw. */
+/** Launch `floor(garrison * fraction)` ships from one planet toward another.
+ * Sending 0 ships is a no-op, not an error; invalid planets, neutral sources,
+ * and self-sends are silently ignored (stale UI input must never throw). */
+export function sendFleet(
+  state: GameState,
+  fromPlanetId: number,
+  toPlanetId: number,
+  fraction: number
+): void {
+  const source = state.planets[fromPlanetId];
+  const target = state.planets[toPlanetId];
+  if (!source || !target || fromPlanetId === toPlanetId) return;
+  if (source.owner === NEUTRAL) return;
+
+  const n = Math.floor(source.garrison * fraction);
+  if (n < 1) return;
+  source.garrison -= n;
+
+  state.fleets.push({
+    id: state.nextFleetId++,
+    owner: source.owner,
+    ships: n,
+    originId: fromPlanetId,
+    destId: toPlanetId,
+    progress: 0,
+  });
+}
+
+/** Validate and apply a send command from a commander (player or AI): each
+ * listed source must actually belong to the command's owner. */
 export function applyCommand(state: GameState, cmd: Command): void {
   if (state.phase !== "playing") return;
-  const target = state.planets[cmd.to];
-  if (!target) return;
-
   for (const fromId of cmd.from) {
     const source = state.planets[fromId];
-    if (!source || source.owner !== cmd.owner || fromId === cmd.to) continue;
-    const n = Math.floor(source.ships * SEND_FRACTION);
-    if (n < 1) continue;
-    source.ships -= n;
-
-    const d = dist(source.x, source.y, target.x, target.y);
-    const ux = (target.x - source.x) / d;
-    const uy = (target.y - source.y) / d;
-    state.fleets.push({
-      id: state.nextFleetId++,
-      owner: cmd.owner,
-      ships: n,
-      x: source.x + ux * source.r,
-      y: source.y + uy * source.r,
-      targetId: cmd.to,
-    });
+    if (!source || source.owner !== cmd.owner) continue;
+    sendFleet(state, fromId, cmd.to, SEND_FRACTION);
   }
+}
+
+/** Fleet arrival: ownership is evaluated at arrival time. Same owner
+ * reinforces; otherwise attackers trade 1:1 with the garrison and the planet
+ * flips if they exceed it (exact tie: defender holds at 0, owner unchanged). */
+function resolveArrival(planet: Planet, fleet: Fleet): void {
+  if (planet.owner === fleet.owner) {
+    planet.garrison += fleet.ships;
+  } else if (fleet.ships > planet.garrison) {
+    planet.owner = fleet.owner;
+    planet.garrison = fleet.ships - planet.garrison;
+  } else {
+    planet.garrison -= fleet.ships;
+  }
+}
+
+/** Advance the simulation by one step of `dt` seconds. Spec step order
+ * (QUA-119) — do not reorder:
+ *   1. production on owned planets
+ *   2. advance fleet progress
+ *   3. resolve arrivals, simultaneous arrivals in FLEET-ID order
+ *   4. increment tick counter */
+export function tick(state: GameState, dt: number): GameState {
+  for (const p of state.planets) {
+    if (p.owner !== NEUTRAL) {
+      p.garrison += PRODUCTION[p.size] * dt;
+    }
+  }
+
+  for (const f of state.fleets) {
+    const origin = state.planets[f.originId]!;
+    const target = state.planets[f.destId]!;
+    const d = dist(origin.x, origin.y, target.x, target.y);
+    f.progress += (SHIP_SPEED * dt) / d;
+  }
+
+  // Resolve in id order regardless of array order (ids are assigned in launch
+  // order, so this is oldest-launch-first and stays deterministic even if the
+  // fleets array is ever reordered). Never sort state.fleets itself — render
+  // matches prev/curr fleets by id and relies on stable array order.
+  const arrived = state.fleets.filter((f) => f.progress >= 1);
+  if (arrived.length > 0) {
+    arrived.sort((a, b) => a.id - b.id);
+    for (const f of arrived) {
+      resolveArrival(state.planets[f.destId]!, f);
+    }
+    state.fleets = state.fleets.filter((f) => f.progress < 1);
+  }
+
+  state.tick += 1;
+  return state;
 }
 
 /** AI decision: pure function of state + state.rng, so replays stay exact.
  * From its strongest planet, attack the cheapest-and-closest non-AI planet,
- * occasionally (25%) the second-best to be less mechanical. */
+ * occasionally (25%) the second-best to be less mechanical. QUA-123 replaces
+ * this with configurable difficulty tiers. */
 function runAI(state: GameState): void {
   let source: Planet | null = null;
   for (const p of state.planets) {
-    if (p.owner === AI && (source === null || p.ships > source.ships)) {
+    if (p.owner === AI1 && (source === null || p.garrison > source.garrison)) {
       source = p;
     }
   }
-  if (!source || Math.floor(source.ships) < AI_MIN_GARRISON) return;
+  if (!source || Math.floor(source.garrison) < AI_MIN_GARRISON) return;
   const src = source;
 
   const candidates = state.planets
-    .filter((p) => p.owner !== AI)
-    .map((p) => ({ id: p.id, score: p.ships + dist(src.x, src.y, p.x, p.y) / 50 }))
+    .filter((p) => p.owner !== AI1)
+    .map((p) => ({
+      id: p.id,
+      score: p.garrison + dist(src.x, src.y, p.x, p.y) / AI_DIST_DIVISOR,
+    }))
     .sort((a, b) => a.score - b.score || a.id - b.id);
   if (candidates.length === 0) return;
 
@@ -136,68 +202,32 @@ function runAI(state: GameState): void {
   if (candidates.length > 1 && nextFloat(state.rng) < 0.25) {
     pick = candidates[1]!;
   }
-  applyCommand(state, { type: "send", owner: AI, from: [src.id], to: pick.id });
+  applyCommand(state, { type: "send", owner: AI1, from: [src.id], to: pick.id });
 }
 
-/** Fleet arrival: ownership is evaluated at arrival time. Same owner
- * reinforces; otherwise attackers trade 1:1 with the garrison and the planet
- * flips if they exceed it (exact tie: defender holds at 0). */
-function resolveArrival(planet: Planet, fleet: Fleet): void {
-  if (planet.owner === fleet.owner) {
-    planet.ships += fleet.ships;
-  } else if (fleet.ships > planet.ships) {
-    planet.owner = fleet.owner;
-    planet.ships = fleet.ships - planet.ships;
-  } else {
-    planet.ships -= fleet.ships;
-  }
-}
-
-/** Advance the simulation by exactly one fixed tick. `commands` are external
- * (player) commands for this tick, applied in array order. Processing order
- * within a tick is fixed: commands, AI, production, fleet movement/arrivals,
- * win check — do not reorder. */
+/** Game-loop wrapper around tick(): external commands, then AI, then one
+ * fixed-dt tick, then the win check. The acceptance/unit tests call tick()
+ * directly and stay AI-free. */
 export function update(state: GameState, commands: readonly Command[]): void {
   if (state.phase !== "playing") return;
-  state.tick += 1;
 
   for (const cmd of commands) {
     applyCommand(state, cmd);
   }
 
-  if (state.tick % AI_PERIOD === 0) {
+  // tick > 0 guard: the counter increments at the END of tick() per spec, so
+  // without it the AI would act on the very first update.
+  if (state.tick > 0 && state.tick % AI_PERIOD === 0) {
     runAI(state);
   }
 
-  for (const p of state.planets) {
-    if (p.owner !== NEUTRAL) {
-      p.ships += (p.r / PROD_DIVISOR) * TICK_DT;
-    }
-  }
-
-  let anyArrived = false;
-  const step = FLEET_SPEED * TICK_DT;
-  for (const f of state.fleets) {
-    const target = state.planets[f.targetId]!;
-    const d = dist(f.x, f.y, target.x, target.y);
-    if (d <= target.r + step) {
-      resolveArrival(target, f);
-      f.targetId = -1; // mark arrived
-      anyArrived = true;
-    } else {
-      f.x += ((target.x - f.x) / d) * step;
-      f.y += ((target.y - f.y) / d) * step;
-    }
-  }
-  if (anyArrived) {
-    state.fleets = state.fleets.filter((f) => f.targetId !== -1);
-  }
+  tick(state, TICK_DT);
 
   let playerAlive = false;
   let aiAlive = false;
   for (const p of state.planets) {
     if (p.owner === PLAYER) playerAlive = true;
-    else if (p.owner === AI) aiAlive = true;
+    else if (p.owner !== NEUTRAL) aiAlive = true;
   }
   for (const f of state.fleets) {
     if (f.owner === PLAYER) playerAlive = true;
