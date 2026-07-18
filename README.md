@@ -25,7 +25,7 @@ Serves the game at http://127.0.0.1:8000 and rebuilds the bundle on every reload
 
 ## Deploy
 
-Pushing to `main` triggers `.github/workflows/deploy.yml`, which builds the project and publishes `dist/` to GitHub Pages. No manual steps; the workflow enables Pages on first run. The site is served from the repo's Pages URL (`https://<owner>.github.io/space-commander/`).
+Pushing to `main` triggers `.github/workflows/deploy.yml`, which builds the project and publishes `dist/` to the `gh-pages` branch; GitHub Pages serves that branch. The site is served from the repo's Pages URL (`https://<owner>.github.io/space-commander/`). Creating the `gh-pages` branch enables Pages automatically on first deploy; if the site 404s, check Settings → Pages is set to deploy from the `gh-pages` branch.
 
 ## Architecture notes (for later phases)
 
