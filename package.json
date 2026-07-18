@@ -1,0 +1,16 @@
+{
+  "name": "space-commander",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile planet-capture RTS tech demo (Galcon-style). TypeScript + Canvas 2D, no runtime dependencies.",
+  "type": "module",
+  "scripts": {
+    "build": "npm run typecheck && esbuild src/main.ts --bundle --minify --sourcemap --outfile=dist/main.js && node -e \"require('fs').copyFileSync('src/index.html','dist/index.html')\"",
+    "serve": "node -e \"require('fs').mkdirSync('dist',{recursive:true});require('fs').copyFileSync('src/index.html','dist/index.html')\" && esbuild src/main.ts --bundle --sourcemap --outfile=dist/main.js --servedir=dist --serve=127.0.0.1:8000",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}
