@@ -7,7 +7,8 @@
   "scripts": {
     "build": "npm run typecheck && esbuild src/main.ts --bundle --minify --sourcemap --outfile=dist/main.js && node -e \"require('fs').copyFileSync('src/index.html','dist/index.html')\"",
     "serve": "node -e \"require('fs').mkdirSync('dist',{recursive:true});require('fs').copyFileSync('src/index.html','dist/index.html')\" && esbuild src/main.ts --bundle --sourcemap --outfile=dist/main.js --servedir=dist --serve=127.0.0.1:8000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:determinism": "esbuild src/test/determinism.ts --bundle --format=esm --outfile=.test-build/determinism.mjs && node .test-build/determinism.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
