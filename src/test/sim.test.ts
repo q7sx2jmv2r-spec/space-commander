@@ -24,6 +24,7 @@ function mkState(planets: Planet[], fleets: Fleet[] = []): GameState {
     fleets,
     nextFleetId: maxFleetId + 1,
     phase: "playing",
+    ai: [],
   };
 }
 

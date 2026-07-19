@@ -3,21 +3,13 @@
 // Math.random or Date.now — all randomness flows through the RngState inside
 // GameState, and draw order is part of the determinism contract.
 
-import {
-  Owner,
-  Size,
-  TICK_DT,
-  PRODUCTION,
-  SHIP_SPEED,
-  SEND_FRACTION,
-  AI_PERIOD,
-  AI_MIN_GARRISON,
-  AI_DIST_DIVISOR,
-} from "./config";
-import { RngState, nextFloat } from "./rng";
+import { Owner, Size, TICK_DT, PRODUCTION, SHIP_SPEED } from "./config";
+import { RngState } from "./rng";
 import { generateMap } from "./mapgen";
+import { AiState, aiDecide, nextDecisionDelay } from "./ai";
 
 export type { Owner, Size };
+export type { AiState };
 export { TICK_DT, TICK_RATE, WORLD_W, WORLD_H } from "./config";
 
 export const NEUTRAL: Owner = "neutral";
@@ -67,6 +59,9 @@ export interface GameState {
   fleets: Fleet[];
   nextFleetId: number;
   phase: Phase;
+  /** AI opponents (QUA-123). Inside GameState (not an external controller) so
+   * a JSON snapshot resumes bit-identically, decision timers included. */
+  ai: AiState[];
 }
 
 /** Standard skirmish start. Map generation (seeding, layout, fairness) lives
@@ -172,39 +167,10 @@ export function tick(state: GameState, dt: number): GameState {
   return state;
 }
 
-/** AI decision: pure function of state + state.rng, so replays stay exact.
- * From its strongest planet, attack the cheapest-and-closest non-AI planet,
- * occasionally (25%) the second-best to be less mechanical. QUA-123 replaces
- * this with configurable difficulty tiers. */
-function runAI(state: GameState): void {
-  let source: Planet | null = null;
-  for (const p of state.planets) {
-    if (p.owner === AI1 && (source === null || p.garrison > source.garrison)) {
-      source = p;
-    }
-  }
-  if (!source || Math.floor(source.garrison) < AI_MIN_GARRISON) return;
-  const src = source;
-
-  const candidates = state.planets
-    .filter((p) => p.owner !== AI1)
-    .map((p) => ({
-      id: p.id,
-      score: p.garrison + dist(src.x, src.y, p.x, p.y) / AI_DIST_DIVISOR,
-    }))
-    .sort((a, b) => a.score - b.score || a.id - b.id);
-  if (candidates.length === 0) return;
-
-  let pick = candidates[0]!;
-  if (candidates.length > 1 && nextFloat(state.rng) < 0.25) {
-    pick = candidates[1]!;
-  }
-  applyCommand(state, { type: "send", owner: AI1, from: [src.id], to: pick.id, fraction: SEND_FRACTION });
-}
-
-/** Game-loop wrapper around tick(): external commands, then AI, then one
- * fixed-dt tick, then the win check. The acceptance/unit tests call tick()
- * directly and stay AI-free. */
+/** Game-loop wrapper around tick(): external commands, then any AI whose
+ * decision tick has come due (QUA-123 — tier logic lives in ai.ts; controllers
+ * return intents which are applied here), then one fixed-dt tick, then the
+ * win check. The acceptance/unit tests call tick() directly and stay AI-free. */
 export function update(state: GameState, commands: readonly Command[]): void {
   if (state.phase !== "playing") return;
 
@@ -212,10 +178,13 @@ export function update(state: GameState, commands: readonly Command[]): void {
     applyCommand(state, cmd);
   }
 
-  // tick > 0 guard: the counter increments at the END of tick() per spec, so
-  // without it the AI would act on the very first update.
-  if (state.tick > 0 && state.tick % AI_PERIOD === 0) {
-    runAI(state);
+  // Fixed array order = fixed rng draw order = reproducible games.
+  for (const ai of state.ai) {
+    if (state.tick < ai.nextDecisionTick) continue;
+    for (const cmd of aiDecide(state, ai)) {
+      applyCommand(state, cmd);
+    }
+    ai.nextDecisionTick = state.tick + nextDecisionDelay(state, ai.tier);
   }
 
   tick(state, TICK_DT);

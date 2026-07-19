@@ -5,7 +5,8 @@
 
 import { GameState, Command, Owner, TICK_DT, PLAYER, update } from "./sim";
 import { generateMap } from "./mapgen";
-import type { FactionCount } from "./config";
+import { setAiLog } from "./ai";
+import type { AiTier, FactionCount } from "./config";
 import { createRenderer, worldTransform } from "./render";
 import { attachInput } from "./input";
 import { hapticImpact, hapticSuccess } from "./haptics";
@@ -44,16 +45,32 @@ function acceptanceState(): GameState {
     fleets: [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 2, progress: 0 }],
     nextFleetId: 1,
     phase: "playing",
+    // Medium AI, first decision at 2s — preserves the original scenario beat
+    // where the AI counterattacks the planet the player just captured.
+    ai: [{ owner: "ai1", tier: "medium", nextDecisionTick: 120 }],
   };
 }
 
 const scenario = new URLSearchParams(location.search).get("scenario");
 
-// ?factions=3 renders a rotated 3-faction map (the 3rd faction stays passive
-// until QUA-123 gives it an AI); anything else defaults to a 2-faction mirror.
+// ?factions=3 renders a rotated 3-faction map; default is a 2-faction mirror.
 function factionsFromUrl(): FactionCount {
   return new URLSearchParams(location.search).get("factions") === "3" ? 3 : 2;
 }
+
+// ?ai=easy|medium|hard (comma list for multiple AI factions, e.g.
+// ?factions=3&ai=easy,hard) picks difficulty; ?ailog=1 prints each AI
+// decision with its reasoning. QUA-124 replaces the param with a setup UI.
+function aiTiersFromUrl(): AiTier[] {
+  const raw = new URLSearchParams(location.search).get("ai");
+  if (!raw) return [];
+  const valid: AiTier[] = ["easy", "medium", "hard"];
+  return raw
+    .split(",")
+    .filter((t): t is AiTier => (valid as string[]).includes(t));
+}
+
+setAiLog(new URLSearchParams(location.search).get("ailog") === "1");
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const renderer = createRenderer(canvas);
@@ -66,7 +83,7 @@ function startGame(seed: number): void {
     state = acceptanceState();
   } else {
     writeSeedToUrl(seed);
-    state = generateMap(seed, factionsFromUrl());
+    state = generateMap(seed, factionsFromUrl(), aiTiersFromUrl());
   }
   prevState = JSON.parse(JSON.stringify(state)) as GameState;
   hapticOwners = []; // re-baseline; a new game's ownership must not buzz
