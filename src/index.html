@@ -9,6 +9,14 @@
   <meta name="theme-color" content="#0b0e1a">
   <title>Space Commander</title>
   <style>
+    :root {
+      /* Mirrored into JS by render.ts (worldTransform) — env() is only
+         readable from CSS, so expose the safe-area insets as variables. */
+      --sai-top: env(safe-area-inset-top, 0px);
+      --sai-right: env(safe-area-inset-right, 0px);
+      --sai-bottom: env(safe-area-inset-bottom, 0px);
+      --sai-left: env(safe-area-inset-left, 0px);
+    }
     html, body {
       margin: 0;
       padding: 0;
