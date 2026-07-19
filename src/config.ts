@@ -32,6 +32,10 @@ export const NEUTRAL_GARRISON: Record<Size, { min: number; max: number }> = {
 /** Default fraction of garrison launched per send. */
 export const SEND_FRACTION = 0.5;
 
+/** Send-amount steps the QUA-131 chip cycles through (must include the
+ * SEND_FRACTION default). */
+export const FRACTION_STEPS: readonly number[] = [0.25, 0.5, 1];
+
 /** Visual/hit-test radius per size class. Also the basis of interception-zone
  * radii (QUA-129: zone = visual radius × zoneRadiusFactor), so this constant
  * is sim-affecting — change it and replays change. */

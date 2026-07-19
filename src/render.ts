@@ -7,6 +7,7 @@ import {
   Fleet,
   Owner,
   Planet,
+  PLAYER,
   WORLD_W,
   WORLD_H,
   planetLevel,
@@ -14,6 +15,7 @@ import {
   zoneDps,
 } from "./sim";
 import { SIZE_RADIUS, SPECS, TICK_RATE } from "./config";
+import { predictPath } from "./predict";
 import type { InputView } from "./input";
 
 const BG = "#0b0e1a";
@@ -54,6 +56,10 @@ const TRACER_ALPHA = 0.55;
 /** In-transit fleet death effect duration and ring-buffer size. */
 const POOF_MS = 400;
 const POOF_SLOTS = 16;
+/** Hostile stretches of the trajectory preview (QUA-131/129). */
+const HOSTILE_COLOR = "#ff5d5d";
+/** Passive enemy/neutral info tooltip lifetime (QUA-131). */
+const TOOLTIP_MS = 1500;
 /** Minimum on-screen garrison font (css px) so counters stay legible on
  * phones, where the world scale can shrink text below readability. */
 const MIN_GARRISON_FONT = 14;
@@ -453,29 +459,66 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     }
   }
 
-  /** Live gesture feedback (QUA-122): trajectory lines while aiming a
-   * drag-send, dashed rubber-band rectangle while box-selecting. Drawn in
-   * world space, under the HUD. */
+  /** Live gesture feedback (QUA-122/131): trajectory preview while aiming a
+   * drag-send — hostile-zone stretches highlighted and an estimated arrival
+   * count when snapped to a target (QUA-129's learnability requirement) —
+   * plus the dashed rubber-band rectangle while box-selecting. Allocates only
+   * during an active drag, never in the steady-state loop. */
   function drawGestures(curr: GameState, view: InputView, scale: number): void {
     const drag = view.drag;
     if (!drag) return;
     if (drag.kind === "aim") {
-      g.strokeStyle = OWNER_STROKE.player;
-      g.lineWidth = 2 / scale;
-      g.setLineDash(AIM_DASH);
+      const target = drag.targetId >= 0 ? curr.planets[drag.targetId] : undefined;
+      const ex = target ? target.x : drag.x;
+      const ey = target ? target.y : drag.y;
+      let survivors = 0;
+
       for (const id of view.selection) {
         const p = curr.planets[id];
         if (!p) continue;
+        const ships = Math.floor(p.garrison * view.sendFraction);
+        const pred = predictPath(curr, PLAYER, p.x, p.y, ex, ey, ships);
+        survivors += pred.survivors;
+
+        g.strokeStyle = OWNER_STROKE.player;
+        g.lineWidth = 2 / scale;
+        g.setLineDash(AIM_DASH);
         g.beginPath();
         g.moveTo(p.x, p.y);
-        g.lineTo(drag.x, drag.y);
+        g.lineTo(ex, ey);
         g.stroke();
+
+        // Hostile stretches: solid hot overdraw on top of the dashed line.
+        if (pred.segments.length > 0) {
+          g.setLineDash(NO_DASH);
+          g.strokeStyle = HOSTILE_COLOR;
+          g.lineWidth = 3 / scale;
+          for (const seg of pred.segments) {
+            g.beginPath();
+            g.moveTo(p.x + (ex - p.x) * seg.t0, p.y + (ey - p.y) * seg.t0);
+            g.lineTo(p.x + (ex - p.x) * seg.t1, p.y + (ey - p.y) * seg.t1);
+            g.stroke();
+          }
+        }
       }
       g.setLineDash(NO_DASH);
       g.fillStyle = OWNER_STROKE.player;
       g.beginPath();
-      g.arc(drag.x, drag.y, 5 / scale, 0, Math.PI * 2);
+      g.arc(ex, ey, 5 / scale, 0, Math.PI * 2);
       g.fill();
+
+      // Arrival estimate at the snapped target — "~" marks it an estimate
+      // (garrisons change in flight; predictPath freezes them at now).
+      if (target) {
+        g.textAlign = "center";
+        g.textBaseline = "bottom";
+        haloText(
+          `~${survivors}`,
+          target.x,
+          target.y - SIZE_RADIUS[target.size] - 10,
+          Math.max(MIN_GARRISON_FONT / scale, 14)
+        );
+      }
     } else {
       g.strokeStyle = "#ffffff";
       g.lineWidth = 1.5 / scale;
@@ -553,6 +596,23 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     drawTracers(curr, alpha, scale);
     drawPoofs(now);
     drawGestures(curr, view, scale);
+
+    // Passive info tooltip from tapping an enemy/neutral planet (QUA-131):
+    // garrison and level, display only, expires here.
+    const tip = view.tooltip;
+    if (tip && now - tip.shownAt < TOOLTIP_MS) {
+      const p = curr.planets[tip.planetId];
+      if (p) {
+        g.textAlign = "center";
+        g.textBaseline = "bottom";
+        haloText(
+          `${Math.floor(p.garrison)} · L${planetLevel(p)}`,
+          p.x,
+          p.y - SIZE_RADIUS[p.size] - 12,
+          Math.max(MIN_GARRISON_FONT / scale, 14)
+        );
+      }
+    }
 
     // HUD in screen space, tucked inside the safe area
     g.setTransform(dpr, 0, 0, dpr, 0, 0);

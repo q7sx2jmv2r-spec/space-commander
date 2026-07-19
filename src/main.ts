@@ -9,9 +9,11 @@
 import { GameState, Command, Owner, TICK_DT, PLAYER, update } from "./sim";
 import { generateMap } from "./mapgen";
 import { setAiLog } from "./ai";
+import { FRACTION_STEPS } from "./config";
 import type { AiTier, FactionCount } from "./config";
 import { createRenderer, worldTransform } from "./render";
 import { attachInput } from "./input";
+import { attachHud } from "./hud";
 import { hapticImpact, hapticSuccess } from "./haptics";
 import { FlowState, FlowEvent, transition } from "./flow";
 import { attachUi, SkirmishSettings } from "./ui";
@@ -110,6 +112,19 @@ let accumulator = 0;
 let lastTime = performance.now();
 
 const input = attachInput(canvas, () => state);
+
+// QUA-131 HUD: the fraction chip cycles the send amount; the type picker
+// issues convert commands through the same tick-boundary command queue as
+// sends, so the sim stays deterministic.
+const hud = attachHud(canvas, {
+  onFractionCycle() {
+    const idx = FRACTION_STEPS.indexOf(input.view.sendFraction);
+    input.setSendFraction(FRACTION_STEPS[(idx + 1) % FRACTION_STEPS.length]!);
+  },
+  onConvert(planetId, to) {
+    input.pendingCommands.push({ type: "convert", owner: PLAYER, planet: planetId, to });
+  },
+});
 
 function startGame(seed: number): void {
   lastSeed = seed;
@@ -282,6 +297,7 @@ function frame(now: number): void {
   }
 
   renderer.render(prevState, state, accumulator / TICK_DT, fps, input.view);
+  hud.update(state, input.view, flowState === "playing");
   requestAnimationFrame(frame);
 }
 
