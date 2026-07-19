@@ -24,6 +24,28 @@ function writeSeedToUrl(seed: number): void {
   history.replaceState(null, "", url);
 }
 
+/** QUA-119 acceptance scenario (3 planets, 2 owners, 1 fleet in transit) as a
+ * visual harness for QUA-120: load ?scenario=accept and watch production tick
+ * up, the fleet cross, and the neutral planet flip (then the AI counterattack
+ * flip it again). Debug-only — deliberately local to main.ts, not sim API. */
+function acceptanceState(): GameState {
+  return {
+    tick: 0,
+    seed: 0,
+    rng: { s: 0 },
+    planets: [
+      { id: 0, x: 220, y: 1320, size: "medium", owner: "player", garrison: 20 },
+      { id: 1, x: 780, y: 280, size: "medium", owner: "ai1", garrison: 20 },
+      { id: 2, x: 730, y: 1140, size: "small", owner: "neutral", garrison: 8 },
+    ],
+    fleets: [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 2, progress: 0 }],
+    nextFleetId: 1,
+    phase: "playing",
+  };
+}
+
+const scenario = new URLSearchParams(location.search).get("scenario");
+
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const renderer = createRenderer(canvas);
 
@@ -31,8 +53,12 @@ let state: GameState;
 let prevState: GameState;
 
 function startGame(seed: number): void {
-  writeSeedToUrl(seed);
-  state = createGame(seed);
+  if (scenario === "accept") {
+    state = acceptanceState();
+  } else {
+    writeSeedToUrl(seed);
+    state = createGame(seed);
+  }
   prevState = JSON.parse(JSON.stringify(state)) as GameState;
 }
 
