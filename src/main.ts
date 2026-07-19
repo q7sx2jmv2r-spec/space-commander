@@ -3,11 +3,12 @@
 // the sim ticks at exactly TICK_RATE via an accumulator, rendering
 // interpolates between the last two ticks.
 
-import { GameState, Command, TICK_DT, update } from "./sim";
+import { GameState, Command, Owner, TICK_DT, PLAYER, update } from "./sim";
 import { generateMap } from "./mapgen";
 import type { FactionCount } from "./config";
-import { createRenderer } from "./render";
+import { createRenderer, worldTransform } from "./render";
 import { attachInput } from "./input";
+import { hapticImpact, hapticSuccess } from "./haptics";
 
 /** Cap on accumulated frame time so a background tab doesn't spiral. */
 const MAX_FRAME_TIME = 0.25;
@@ -68,7 +69,15 @@ function startGame(seed: number): void {
     state = generateMap(seed, factionsFromUrl());
   }
   prevState = JSON.parse(JSON.stringify(state)) as GameState;
+  hapticOwners = []; // re-baseline; a new game's ownership must not buzz
 }
+
+// Haptic events (QUA-122): medium impact when the player gains or loses a
+// planet, success pattern on victory. Detected by diffing ownership across
+// frames — the sim stays haptics-free, and the renderer stays side-effect-free.
+// Declared before the first startGame call, which resets it.
+let hapticOwners: Owner[] = [];
+let hapticPhaseDone = false;
 
 const input = attachInput(
   canvas,
@@ -77,6 +86,48 @@ const input = attachInput(
 );
 
 startGame(seedFromUrl());
+
+// Debug/e2e hook: read-only view of live state plus the world→screen mapping,
+// so automated tests can find planets on screen. Not a public API.
+Object.defineProperty(window, "__game", {
+  value: {
+    get state() {
+      return state;
+    },
+    get view() {
+      return input.view;
+    },
+    toScreen(wx: number, wy: number): { x: number; y: number } {
+      const rect = canvas.getBoundingClientRect();
+      const t = worldTransform(rect.width, rect.height);
+      return { x: rect.left + t.offsetX + wx * t.scale, y: rect.top + t.offsetY + wy * t.scale };
+    },
+  },
+});
+
+function fireStateHaptics(): void {
+  if (hapticOwners.length !== state.planets.length) {
+    hapticOwners = state.planets.map((p) => p.owner);
+    hapticPhaseDone = state.phase !== "playing";
+    return;
+  }
+  let impact = false;
+  for (let i = 0; i < state.planets.length; i++) {
+    const owner = state.planets[i]!.owner;
+    const was = hapticOwners[i]!;
+    if (owner !== was) {
+      if (owner === PLAYER || was === PLAYER) impact = true;
+      hapticOwners[i] = owner;
+    }
+  }
+  if (state.phase !== "playing" && !hapticPhaseDone) {
+    hapticPhaseDone = true;
+    if (state.phase === "playerWon") hapticSuccess();
+    else hapticImpact();
+  } else if (impact) {
+    hapticImpact();
+  }
+}
 
 let accumulator = 0;
 let lastTime = performance.now();
@@ -111,7 +162,8 @@ function frame(now: number): void {
     fpsWindowStart = now;
   }
 
-  renderer.render(prevState, state, accumulator / TICK_DT, fps, input.selection);
+  fireStateHaptics();
+  renderer.render(prevState, state, accumulator / TICK_DT, fps, input.view);
   requestAnimationFrame(frame);
 }
 

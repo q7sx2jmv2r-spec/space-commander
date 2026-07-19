@@ -4,6 +4,7 @@
 
 import { GameState, Fleet, Owner, WORLD_W, WORLD_H } from "./sim";
 import { SIZE_RADIUS } from "./config";
+import type { InputView } from "./input";
 
 const BG = "#0b0e1a";
 // ai2/ai3 colors are reserved for QUA-123; distinguishable by brightness as
@@ -61,6 +62,13 @@ export interface WorldTransform {
   offsetY: number;
 }
 
+// Dash patterns preallocated: setLineDash takes arrays and the draw loop must
+// not allocate per frame. World-space values; visually stable enough across
+// device scales that per-frame rescaling isn't worth it.
+const AIM_DASH = [18, 14];
+const BOX_DASH = [14, 10];
+const NO_DASH: number[] = [];
+
 // worldTransform returns this shared scratch object so the per-frame draw
 // loop allocates nothing; callers must read it immediately, never retain it.
 const scratchTransform: WorldTransform = { scale: 1, offsetX: 0, offsetY: 0 };
@@ -93,7 +101,7 @@ export interface Renderer {
     curr: GameState,
     alpha: number,
     fps: number,
-    selection: ReadonlySet<number>
+    view: InputView
   ): void;
 }
 
@@ -206,6 +214,38 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     }
   }
 
+  /** Live gesture feedback (QUA-122): trajectory lines while aiming a
+   * drag-send, dashed rubber-band rectangle while box-selecting. Drawn in
+   * world space, under the HUD. */
+  function drawGestures(curr: GameState, view: InputView, scale: number): void {
+    const drag = view.drag;
+    if (!drag) return;
+    if (drag.kind === "aim") {
+      g.strokeStyle = OWNER_STROKE.player;
+      g.lineWidth = 2 / scale;
+      g.setLineDash(AIM_DASH);
+      for (const id of view.selection) {
+        const p = curr.planets[id];
+        if (!p) continue;
+        g.beginPath();
+        g.moveTo(p.x, p.y);
+        g.lineTo(drag.x, drag.y);
+        g.stroke();
+      }
+      g.setLineDash(NO_DASH);
+      g.fillStyle = OWNER_STROKE.player;
+      g.beginPath();
+      g.arc(drag.x, drag.y, 5 / scale, 0, Math.PI * 2);
+      g.fill();
+    } else {
+      g.strokeStyle = "#ffffff";
+      g.lineWidth = 1.5 / scale;
+      g.setLineDash(BOX_DASH);
+      g.strokeRect(drag.x0, drag.y0, drag.x1 - drag.x0, drag.y1 - drag.y0);
+      g.setLineDash(NO_DASH);
+    }
+  }
+
   function drawFleets(
     prev: GameState,
     curr: GameState,
@@ -246,7 +286,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     curr: GameState,
     alpha: number,
     fps: number,
-    selection: ReadonlySet<number>
+    view: InputView
   ): void {
     syncCanvasSize();
     const dpr = window.devicePixelRatio || 1;
@@ -269,8 +309,9 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     g.lineWidth = 4;
     g.strokeRect(0, 0, WORLD_W, WORLD_H);
 
-    drawPlanets(curr, selection, scale, now);
+    drawPlanets(curr, view.selection, scale, now);
     drawFleets(prev, curr, alpha, scale);
+    drawGestures(curr, view, scale);
 
     // HUD in screen space, tucked inside the safe area
     g.setTransform(dpr, 0, 0, dpr, 0, 0);

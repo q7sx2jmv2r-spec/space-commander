@@ -49,6 +49,9 @@ export interface SendCommand {
   owner: Owner;
   from: number[]; // source planet ids, sorted ascending
   to: number;
+  /** Fraction of each source garrison to send (0..1]. UI sends 0.5 on tap,
+   * 1.0 on double-tap. */
+  fraction: number;
 }
 export type Command = SendCommand;
 
@@ -114,7 +117,7 @@ export function applyCommand(state: GameState, cmd: Command): void {
   for (const fromId of cmd.from) {
     const source = state.planets[fromId];
     if (!source || source.owner !== cmd.owner) continue;
-    sendFleet(state, fromId, cmd.to, SEND_FRACTION);
+    sendFleet(state, fromId, cmd.to, cmd.fraction);
   }
 }
 
@@ -196,7 +199,7 @@ function runAI(state: GameState): void {
   if (candidates.length > 1 && nextFloat(state.rng) < 0.25) {
     pick = candidates[1]!;
   }
-  applyCommand(state, { type: "send", owner: AI1, from: [src.id], to: pick.id });
+  applyCommand(state, { type: "send", owner: AI1, from: [src.id], to: pick.id, fraction: SEND_FRACTION });
 }
 
 /** Game-loop wrapper around tick(): external commands, then AI, then one
