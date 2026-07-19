@@ -36,10 +36,81 @@ export const SEND_FRACTION = 0.5;
  * simulation itself never reads radii. */
 export const SIZE_RADIUS: Record<Size, number> = { small: 32, medium: 44, large: 56 };
 
-// AI (rescaled to the QUA-119 garrison scale; tiers arrive in QUA-123)
-export const AI_PERIOD = 120; // ticks between decisions (2s)
-export const AI_MIN_GARRISON = 10;
-export const AI_DIST_DIVISOR = 250; // target score = garrison + dist/AI_DIST_DIVISOR
+// ---------------------------------------------------------------------------
+// AI difficulty tiers (QUA-123). Pure data — ai.ts interprets these; adding a
+// tier means adding a block here, never new logic. Tuned by hand in QUA-126.
+// ---------------------------------------------------------------------------
+
+export type AiTier = "easy" | "medium" | "hard";
+
+export interface AiTierConfig {
+  /** Seconds between decisions [min, max); jittered per decision via the
+   * seeded PRNG. */
+  interval: { min: number; max: number };
+  /** Fraction of a source's garrison launched per attack send. */
+  attackFraction: number;
+  /** Fraction of a helper's garrison launched per reinforcement send. */
+  reinforceFraction: number;
+  /** Keep at least this fraction of a source's garrison at home. */
+  reserveFraction: number;
+  /** Target scoring: score = garrison·garrisonWeight + dist·distanceWeight;
+   * lowest score wins (cheapest capture). */
+  garrisonWeight: number;
+  distanceWeight: number;
+  /** Max sends issued in one decision (burst cap for large maps). */
+  maxSendsPerDecision: number;
+  /** Checks incoming hostile fleets and reinforces threatened planets. */
+  reinforces: boolean;
+  /** Refuses attacks that provably can't capture (garrison + production over
+   * travel time); easy ships anyway — its mistakes are part of its charm. */
+  checksFeasibility: boolean;
+  /** Pools 2–3 source planets to take targets no single planet could. */
+  combinesFleets: boolean;
+  /** Prioritizes enemy planets that were just emptied by a big send. */
+  countersEmptied: boolean;
+}
+
+export const AI_TIERS: Record<AiTier, AiTierConfig> = {
+  easy: {
+    interval: { min: 4, max: 6 },
+    attackFraction: 0.5,
+    reinforceFraction: 0,
+    reserveFraction: 0,
+    garrisonWeight: 1,
+    distanceWeight: 1 / 150, // mostly nearest-first
+    maxSendsPerDecision: 1,
+    reinforces: false,
+    checksFeasibility: false,
+    combinesFleets: false,
+    countersEmptied: false,
+  },
+  medium: {
+    interval: { min: 2, max: 3 },
+    attackFraction: 0.5,
+    reinforceFraction: 0.3,
+    reserveFraction: 0.15,
+    garrisonWeight: 1,
+    distanceWeight: 1 / 100, // garrison/distance flavour: cheap AND close
+    maxSendsPerDecision: 2,
+    reinforces: true,
+    checksFeasibility: true,
+    combinesFleets: false,
+    countersEmptied: false,
+  },
+  hard: {
+    interval: { min: 1, max: 2 },
+    attackFraction: 0.6,
+    reinforceFraction: 0.35,
+    reserveFraction: 0.1,
+    garrisonWeight: 1,
+    distanceWeight: 1 / 100,
+    maxSendsPerDecision: 3,
+    reinforces: true,
+    checksFeasibility: true,
+    combinesFleets: true,
+    countersEmptied: true,
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Map generation (QUA-121). generateMap(seed, factionCount) builds symmetric,

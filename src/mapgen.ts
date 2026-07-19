@@ -35,7 +35,9 @@ import {
   PLACEMENT_TRIES,
   MAX_MAP_ATTEMPTS,
 } from "./config";
+import { AiTier } from "./config";
 import { RngState, createRng, nextFloat, nextRange } from "./rng";
+import { AiState, nextDecisionDelay } from "./ai";
 import type { GameState, Planet } from "./sim";
 
 const CX = WORLD_W / 2;
@@ -310,8 +312,14 @@ function validate(planets: readonly Planet[], factionCount: FactionCount): boole
  * @param seed  Reproducibility seed. If omitted, one is derived from the clock
  *              and logged so the map can be reproduced.
  * @param factionCount  2 (mirrored) or 3 (rotated) home factions.
+ * @param aiTiers  Difficulty per AI faction (ai1, then ai2), padded with the
+ *                 last entry / "medium" when shorter than the faction count.
  */
-export function generateMap(seed?: number, factionCount: FactionCount = 2): GameState {
+export function generateMap(
+  seed?: number,
+  factionCount: FactionCount = 2,
+  aiTiers: readonly AiTier[] = []
+): GameState {
   let s = seed;
   if (s === undefined) {
     s = Date.now() >>> 0;
@@ -323,7 +331,7 @@ export function generateMap(seed?: number, factionCount: FactionCount = 2): Game
     const genRng = createRng(mixSeed(s, attempt));
     const planets = tryBuild(genRng, factionCount);
     if (planets) {
-      return {
+      const state: GameState = {
         tick: 0,
         seed: s,
         // Gameplay RNG is a separate stream, decorrelated from the map-gen
@@ -334,7 +342,15 @@ export function generateMap(seed?: number, factionCount: FactionCount = 2): Game
         fleets: [],
         nextFleetId: 0,
         phase: "playing",
+        ai: [],
       };
+      for (let f = 1; f < factionCount; f++) {
+        const tier = aiTiers[f - 1] ?? aiTiers[aiTiers.length - 1] ?? "medium";
+        const ai: AiState = { owner: FACTION_OWNERS[f]!, tier, nextDecisionTick: 0 };
+        ai.nextDecisionTick = nextDecisionDelay(state, tier);
+        state.ai.push(ai);
+      }
+      return state;
     }
   }
   throw new Error(
