@@ -3,12 +3,25 @@
 // Math.random or Date.now — all randomness flows through the RngState inside
 // GameState, and draw order is part of the determinism contract.
 
-import { Owner, Size, TICK_DT, PRODUCTION, SHIP_SPEED } from "./config";
+import {
+  Owner,
+  Size,
+  Spec,
+  TICK_DT,
+  TICK_RATE,
+  PRODUCTION,
+  SHIP_SPEED,
+  DEVELOPMENT,
+  GARRISON_CAP,
+  SPECS,
+  INTERCEPT,
+  SIZE_RADIUS,
+} from "./config";
 import { RngState } from "./rng";
 import { generateMap } from "./mapgen";
 import { AiState, aiDecide, nextDecisionDelay } from "./ai";
 
-export type { Owner, Size };
+export type { Owner, Size, Spec };
 export type { AiState };
 export { TICK_DT, TICK_RATE, WORLD_W, WORLD_H } from "./config";
 
@@ -23,6 +36,16 @@ export interface Planet {
   size: Size;
   owner: Owner;
   garrison: number; // fractional internally; use Math.floor for display/sending
+  /** Ticks held by the current owner (QUA-128). Integer, incremented once per
+   * tick; reset to 0 when the planet changes hands. Level is derived from
+   * this via planetLevel(), never stored. */
+  heldTicks: number;
+  /** Specialisation (QUA-130). `spec` keeps its old value while a conversion
+   * runs (convertTicks > 0, completing into `nextSpec`), but its bonuses are
+   * offline during the downtime. Capture resets all three. */
+  spec: Spec;
+  nextSpec: Spec;
+  convertTicks: number;
 }
 
 export interface Fleet {
@@ -34,6 +57,9 @@ export interface Fleet {
   /** 0..1 along the origin→destination center line. Position is derived, not
    * stored: origin/dest planets never move, so the lerp is exact. */
   progress: number;
+  /** Fractional interception damage accumulator (QUA-129): whole numbers are
+   * decremented from `ships` as they accrue, the remainder carries. */
+  damage: number;
 }
 
 export interface SendCommand {
@@ -41,11 +67,19 @@ export interface SendCommand {
   owner: Owner;
   from: number[]; // source planet ids, sorted ascending
   to: number;
-  /** Fraction of each source garrison to send (0..1]. UI sends 0.5 on tap,
-   * 1.0 on double-tap. */
+  /** Fraction of each source garrison to send (0..1]. */
   fraction: number;
 }
-export type Command = SendCommand;
+
+/** Start converting an owned planet to a specialisation type (QUA-130). */
+export interface ConvertCommand {
+  type: "convert";
+  owner: Owner;
+  planet: number;
+  to: Spec;
+}
+
+export type Command = SendCommand | ConvertCommand;
 
 export type Phase = "playing" | "playerWon" | "aiWon";
 
@@ -69,6 +103,53 @@ export interface GameState {
  * seed. Use generateMap directly for other faction counts. */
 export function createGame(seed: number): GameState {
   return generateMap(seed, 2);
+}
+
+/** Development level (QUA-128), derived from time held so it can never desync
+ * from heldTicks. Neutral planets never develop. */
+export function planetLevel(p: Planet): 1 | 2 | 3 {
+  if (p.owner === NEUTRAL) return 1;
+  if (p.heldTicks >= DEVELOPMENT.levelTimes[2] * TICK_RATE) return 3;
+  if (p.heldTicks >= DEVELOPMENT.levelTimes[1] * TICK_RATE) return 2;
+  return 1;
+}
+
+/** Soft garrison cap (QUA-128): production stops here; reinforcement and
+ * capture surpluses may exceed it (see GARRISON_CAP). */
+export function garrisonCap(p: Planet): number {
+  return GARRISON_CAP[p.size] * DEVELOPMENT.capMult[planetLevel(p) - 1]!;
+}
+
+/** Combat multiplier for a defending garrison (QUA-130): each defender is
+ * worth this many attackers. Spec bonuses are offline while converting. */
+export function defendMultiplier(p: Planet): number {
+  if (p.convertTicks > 0) return 1;
+  if (p.spec === "defence") return SPECS.defence.defendMult;
+  if (p.spec === "naval") return SPECS.naval.defendMult;
+  return 1;
+}
+
+/** Interception zone radius in world units (QUA-129); 0 for neutrals. The
+ * defence spec widens it (offline while converting). */
+export function zoneRadius(p: Planet): number {
+  if (p.owner === NEUTRAL) return 0;
+  const specMult = p.spec === "defence" && p.convertTicks === 0 ? SPECS.defence.zoneRadiusMult : 1;
+  return SIZE_RADIUS[p.size] * INTERCEPT.zoneRadiusFactor * specMult;
+}
+
+/** Ships/sec a zone strips from an enemy fleet inside it: 5% of the displayed
+ * garrison count per second × level × defence-spec multiplier. Read live each
+ * tick — a garrison being whittled down intercepts ever more weakly, and an
+ * emptied one (garrison 0) inflicts nothing. */
+export function zoneDps(p: Planet): number {
+  if (p.owner === NEUTRAL) return 0;
+  const specMult = p.spec === "defence" && p.convertTicks === 0 ? SPECS.defence.zoneDamageMult : 1;
+  return (
+    INTERCEPT.damageRate *
+    Math.floor(p.garrison) *
+    DEVELOPMENT.interceptMult[planetLevel(p) - 1]! *
+    specMult
+  );
 }
 
 function dist(ax: number, ay: number, bx: number, by: number): number {
@@ -102,13 +183,33 @@ export function sendFleet(
     originId: fromPlanetId,
     destId: toPlanetId,
     progress: 0,
+    damage: 0,
   });
 }
 
-/** Validate and apply a send command from a commander (player or AI): each
- * listed source must actually belong to the command's owner. */
+/** Start a specialisation conversion (QUA-130): costs SPECS.costShips from
+ * the garrison plus SPECS.convertTime seconds of downtime (no production, no
+ * spec bonuses). Re-converting later — even mid-conversion — is allowed and
+ * pays the full cost again. Invalid or unaffordable requests are silently
+ * ignored (stale UI input must never throw). */
+export function convertPlanet(state: GameState, cmd: ConvertCommand): void {
+  const p = state.planets[cmd.planet];
+  if (!p || p.owner !== cmd.owner) return;
+  if (p.garrison < SPECS.costShips) return;
+  if (cmd.to === p.spec && p.convertTicks === 0) return; // no-op re-convert
+  p.garrison -= SPECS.costShips;
+  p.nextSpec = cmd.to;
+  p.convertTicks = Math.round(SPECS.convertTime * TICK_RATE);
+}
+
+/** Validate and apply a command from a commander (player or AI): every
+ * referenced planet must actually belong to the command's owner. */
 export function applyCommand(state: GameState, cmd: Command): void {
   if (state.phase !== "playing") return;
+  if (cmd.type === "convert") {
+    convertPlanet(state, cmd);
+    return;
+  }
   for (const fromId of cmd.from) {
     const source = state.planets[fromId];
     if (!source || source.owner !== cmd.owner) continue;
@@ -117,30 +218,71 @@ export function applyCommand(state: GameState, cmd: Command): void {
 }
 
 /** Fleet arrival: ownership is evaluated at arrival time. Same owner
- * reinforces; otherwise attackers trade 1:1 with the garrison and the planet
- * flips if they exceed it (exact tie: defender holds at 0, owner unchanged). */
+ * reinforces; otherwise each defender is worth defendMultiplier(planet)
+ * attackers (QUA-130; ×1 reduces to a plain 1:1 trade) — the planet flips
+ * when the attackers exceed the multiplied garrison, paying its full
+ * multiplied price; a failed attack kills ships/mult defenders (exact tie:
+ * defender holds at 0, owner unchanged). Capture resets development and
+ * specialisation. */
 function resolveArrival(planet: Planet, fleet: Fleet): void {
   if (planet.owner === fleet.owner) {
     planet.garrison += fleet.ships;
-  } else if (fleet.ships > planet.garrison) {
+    return;
+  }
+  const mult = defendMultiplier(planet);
+  if (fleet.ships > planet.garrison * mult) {
     planet.owner = fleet.owner;
-    planet.garrison = fleet.ships - planet.garrison;
+    planet.garrison = fleet.ships - planet.garrison * mult;
+    planet.heldTicks = 0; // development resets on capture (QUA-128)
+    planet.spec = "standard"; // capture clears specialisation (QUA-130)
+    planet.nextSpec = "standard";
+    planet.convertTicks = 0;
   } else {
-    planet.garrison -= fleet.ships;
+    planet.garrison -= fleet.ships / mult;
   }
 }
 
 /** Advance the simulation by one step of `dt` seconds. Spec step order
- * (QUA-119) — do not reorder:
- *   1. production on owned planets
+ * (QUA-119, extended by QUA-128/129/130) — do not reorder:
+ *   1. production + development + conversion timers on owned planets
  *   2. advance fleet progress
- *   3. resolve arrivals, simultaneous arrivals in FLEET-ID order
- *   4. increment tick counter */
+ *   3. interception attrition on in-transit fleets; destroyed fleets despawn
+ *   4. resolve arrivals, simultaneous arrivals in FLEET-ID order
+ *   5. increment tick counter */
 export function tick(state: GameState, dt: number): GameState {
+  // Empire-wide economy bonus (QUA-130): count each owner's completed economy
+  // planets once, before the production loop — converting ones don't count.
+  const econCount: Partial<Record<Owner, number>> = {};
   for (const p of state.planets) {
-    if (p.owner !== NEUTRAL) {
-      p.garrison += PRODUCTION[p.size] * dt;
+    if (p.owner !== NEUTRAL && p.spec === "economy" && p.convertTicks === 0) {
+      econCount[p.owner] = (econCount[p.owner] ?? 0) + 1;
     }
+  }
+
+  for (const p of state.planets) {
+    if (p.owner === NEUTRAL) continue; // neutrals neither produce nor develop
+    if (p.convertTicks > 0) {
+      // Converting: no production, but development continues (QUA-130).
+      p.convertTicks -= 1;
+      if (p.convertTicks === 0) p.spec = p.nextSpec;
+      p.heldTicks += 1;
+      continue;
+    }
+    const cap = garrisonCap(p);
+    if (p.garrison < cap) {
+      const specMult =
+        p.spec === "naval"
+          ? SPECS.naval.productionMult
+          : p.spec === "economy"
+            ? SPECS.economy.productionMult
+            : 1;
+      const empireMult = 1 + SPECS.economy.empireBonus * (econCount[p.owner] ?? 0);
+      const rate =
+        PRODUCTION[p.size] * DEVELOPMENT.productionMult[planetLevel(p) - 1]! * specMult * empireMult;
+      p.garrison = Math.min(cap, p.garrison + rate * dt);
+    }
+    // After production, so a level-up takes effect from the next tick.
+    p.heldTicks += 1;
   }
 
   for (const f of state.fleets) {
@@ -148,6 +290,37 @@ export function tick(state: GameState, dt: number): GameState {
     const target = state.planets[f.destId]!;
     const d = dist(origin.x, origin.y, target.x, target.y);
     f.progress += (SHIP_SPEED * dt) / d;
+  }
+
+  // Interception (QUA-129): every hostile zone containing the fleet fires at
+  // once (overlaps stack). Fleets that reached progress 1 this tick are
+  // exempt — they land and fight at full strength. Fractional damage accrues
+  // per fleet; only whole ships are ever removed.
+  let anyDestroyed = false;
+  for (const f of state.fleets) {
+    if (f.progress >= 1) continue;
+    const origin = state.planets[f.originId]!;
+    const target = state.planets[f.destId]!;
+    const fx = origin.x + (target.x - origin.x) * f.progress;
+    const fy = origin.y + (target.y - origin.y) * f.progress;
+    let dps = 0;
+    for (const p of state.planets) {
+      if (p.owner === NEUTRAL || p.owner === f.owner) continue;
+      if (dist(p.x, p.y, fx, fy) <= zoneRadius(p)) dps += zoneDps(p);
+    }
+    if (dps > 0) {
+      f.damage += dps * dt;
+      const whole = Math.floor(f.damage);
+      if (whole > 0) {
+        f.ships -= whole;
+        f.damage -= whole;
+        if (f.ships <= 0) anyDestroyed = true;
+      }
+    }
+  }
+  if (anyDestroyed) {
+    // Ground to zero in transit: despawn without ever arriving.
+    state.fleets = state.fleets.filter((f) => f.ships > 0);
   }
 
   // Resolve in id order regardless of array order (ids are assigned in launch

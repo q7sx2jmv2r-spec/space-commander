@@ -174,7 +174,7 @@ function tryBuild(rng: RngState, factionCount: FactionCount): Planet[] | null {
       const x = CX + rad * Math.cos(ang);
       const y = CY + rad * Math.sin(ang);
       if (!fits(planets, x, y, centerR)) continue;
-      planets.push({ id: planets.length, x, y, size: centerSize, owner: "neutral", garrison: neutralGarrison(rng, centerSize) });
+      planets.push({ id: planets.length, x, y, size: centerSize, owner: "neutral", garrison: neutralGarrison(rng, centerSize), heldTicks: 0, spec: "standard", nextSpec: "standard", convertTicks: 0 });
       placed = true;
       break;
     }
@@ -260,6 +260,10 @@ function tryBuild(rng: RngState, factionCount: FactionCount): Planet[] | null {
         size: sp.size,
         owner: isHome ? owner : "neutral",
         garrison: sp.garrison,
+        heldTicks: 0,
+        spec: "standard",
+        nextSpec: "standard",
+        convertTicks: 0,
       });
     }
   }
@@ -346,7 +350,7 @@ export function generateMap(
       };
       for (let f = 1; f < factionCount; f++) {
         const tier = aiTiers[f - 1] ?? aiTiers[aiTiers.length - 1] ?? "medium";
-        const ai: AiState = { owner: FACTION_OWNERS[f]!, tier, nextDecisionTick: 0 };
+        const ai: AiState = { owner: FACTION_OWNERS[f]!, tier, nextDecisionTick: 0, groomId: -1 };
         ai.nextDecisionTick = nextDecisionDelay(state, tier);
         state.ai.push(ai);
       }

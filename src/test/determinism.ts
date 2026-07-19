@@ -8,9 +8,14 @@ import { GameState, Command, PLAYER, createGame, update } from "../sim";
 const TICKS = 5000;
 
 // Scripted player commands exercise the command path. Targets are clamped to
-// the generated planet count so any seed works.
+// the generated planet count so any seed works; the convert targets the
+// player's home so the QUA-130 fields and timer are always exercised.
 function commandsFor(tick: number, state: GameState): Command[] {
   const n = state.planets.length;
+  if (tick === 120) {
+    const home = state.planets.find((p) => p.owner === PLAYER)!;
+    return [{ type: "convert", owner: PLAYER, planet: home.id, to: "economy" }];
+  }
   if (tick === 240) return [{ type: "send", owner: PLAYER, from: [0], to: 2 % n, fraction: 0.5 }];
   if (tick === 900) return [{ type: "send", owner: PLAYER, from: [0], to: 3 % n, fraction: 0.5 }];
   return [];

@@ -1,7 +1,11 @@
-// Touch/pointer input (QUA-122). Genre-convention gestures (Galcon/Auralux):
-// tap to select/toggle, tap target to send, drag-from-planet to aim+send with
-// a live trajectory, drag-on-empty for rubber-band multiselect, double-taps
-// for select-all / full-strength send. Selection is UI state and lives here,
+// Touch/pointer input (QUA-131, superseding QUA-122's send gestures). The
+// rule is absolute: TAP ONLY EVER SELECTS, DRAG ONLY EVER MOVES FLEETS.
+// Tap owned planet = toggle selection; double-tap owned = select all owned;
+// tap enemy/neutral = passive info tooltip, never an action; tap empty =
+// deselect. Drag from a selected planet aims a send from the whole selection
+// (release on a planet sends, empty space cancels); drag from an unselected
+// owned planet is an implicit select-and-move of that one planet; drag from
+// empty space rubber-band multiselects. Selection is UI state and lives here,
 // never in GameState; gestures translate into Commands that main.ts feeds to
 // the sim at tick boundaries, keeping the sim deterministic and replay-ready.
 //
@@ -15,25 +19,33 @@ import { hapticTick } from "./haptics";
 
 // Gesture thresholds in css px (≈pt), converted to world units per-event via
 // the live transform scale so they feel identical at every zoom/device.
-const TAP_SLOP = 10; // beyond this movement a press becomes a drag
-const SNAP_DIST = 20; // drag release within this of a planet edge targets it
+const TAP_SLOP = 8; // beyond this movement a press becomes a drag (QUA-131)
+const SNAP_DIST = 22; // with MIN_HIT_RADIUS this snaps drops within ~44pt
 const DOUBLE_TAP_MS = 300;
 const MIN_HIT_RADIUS = 22; // 44pt hit area regardless of visual planet size
 
 /** Live gesture feedback for the renderer (world coords). `drag` is null when
- * no gesture is in flight. A single mutable object, reused — the renderer
- * reads it every frame and must not retain it. */
+ * no gesture is in flight; an aim drag carries the snapped target planet id
+ * (-1 = none) so the renderer and the release handler agree. A single mutable
+ * object, reused — the renderer reads it every frame and must not retain it. */
 export interface InputView {
   selection: ReadonlySet<number>;
+  /** Fraction of each source garrison per send; cycled by the HUD chip. */
+  sendFraction: number;
+  /** Passive info tooltip from tapping an enemy/neutral planet (QUA-131) —
+   * display only, expires renderer-side. */
+  tooltip: { planetId: number; shownAt: number } | null;
   drag:
     | null
-    | { kind: "aim"; x: number; y: number }
+    | { kind: "aim"; x: number; y: number; targetId: number }
     | { kind: "box"; x0: number; y0: number; x1: number; y1: number };
 }
 
 export interface InputState {
   view: InputView;
   pendingCommands: Command[];
+  /** Set the send fraction (25/50/100% chip in hud.ts). */
+  setSendFraction(f: number): void;
   /** Clear all gesture/selection state; called on every new game so nothing
    * leaks between games (QUA-124). */
   reset(): void;
@@ -47,14 +59,18 @@ export function attachInput(
 ): InputState {
   const selection = new Set<number>();
   const input: InputState = {
-    view: { selection, drag: null },
+    view: { selection, sendFraction: SEND_FRACTION, tooltip: null, drag: null },
     pendingCommands: [],
+    setSendFraction(f: number) {
+      input.view.sendFraction = f;
+    },
     reset() {
       selection.clear();
       input.pendingCommands.length = 0;
+      input.view.sendFraction = SEND_FRACTION;
+      input.view.tooltip = null;
       lastTapAt = -Infinity;
       lastTapPlanetId = -2;
-      lastSendSources = [];
       resetGesture();
     },
   };
@@ -71,7 +87,6 @@ export function attachInput(
   // Double-tap tracking: what the last completed tap hit, and when.
   let lastTapAt = -Infinity;
   let lastTapPlanetId = -2; // -1 = empty space, -2 = none yet
-  let lastSendSources: number[] = []; // sources of the last tap-send, for the 100% top-up
 
   /** World-units-per-css-px is 1/scale of the shared transform. */
   function cssToWorld(canvasEl: HTMLCanvasElement, cssUnits: number): number {
@@ -153,6 +168,7 @@ export function attachInput(
     startWorld = eventWorld(e);
     curWorld = startWorld;
     preGesture = [...selection];
+    input.view.tooltip = null; // any new touch dismisses the info tooltip
 
     const p = hitTest(state.planets, startWorld.x, startWorld.y);
     startPlanetId = p && p.owner === PLAYER ? p.id : -1;
@@ -173,9 +189,13 @@ export function attachInput(
       const moved = Math.hypot(e.clientX - startCssX, e.clientY - startCssY);
       if (moved <= TAP_SLOP) return; // still a tap candidate
       if (startPlanetId >= 0) {
-        // Drag from an owned planet: select it and start aiming.
         mode = "dragPlanet";
         if (!selection.has(startPlanetId)) {
+          // Implicit select-and-move (QUA-131): a drag from an unselected
+          // owned planet moves just that planet — it replaces the selection
+          // rather than joining it, so a quick single-planet send stays one
+          // gesture with no side effects on a staged multi-selection.
+          selection.clear();
           selection.add(startPlanetId);
           hapticTick();
         }
@@ -185,7 +205,15 @@ export function attachInput(
     }
 
     if (mode === "dragPlanet") {
-      input.view.drag = { kind: "aim", x: curWorld.x, y: curWorld.y };
+      // Live snap: the renderer highlights the snapped target and the
+      // release handler sends to it — one hit-test, no disagreement.
+      const target = hitTest(state.planets, curWorld.x, curWorld.y, SNAP_DIST);
+      input.view.drag = {
+        kind: "aim",
+        x: curWorld.x,
+        y: curWorld.y,
+        targetId: target ? target.id : -1,
+      };
     } else if (mode === "dragBox") {
       updateBoxSelection(state);
     }
@@ -202,56 +230,43 @@ export function attachInput(
     const now = performance.now();
 
     if (mode === "pressed") {
-      // --- Tap ---
+      // --- Tap: only ever selects (QUA-131) ---
       const p = hitTest(state.planets, curWorld.x, curWorld.y);
       const isDoubleTap =
         now - lastTapAt <= DOUBLE_TAP_MS && lastTapPlanetId === (p ? p.id : -1);
 
       if (p && p.owner === PLAYER) {
-        // Toggle membership; accumulates across taps.
-        if (selection.has(p.id)) {
+        if (isDoubleTap) {
+          // Double-tap an owned planet: select every owned planet.
+          for (const pl of state.planets) {
+            if (pl.owner === PLAYER) selection.add(pl.id);
+          }
+          hapticTick();
+        } else if (selection.has(p.id)) {
           selection.delete(p.id);
         } else {
           selection.add(p.id);
           hapticTick();
         }
-        lastSendSources = [];
       } else if (p) {
-        // Tap a target. First tap sends 50% immediately (a speed game gets no
-        // artificial confirm delay); a second tap inside the double-tap window
-        // sends the rest, so the pair totals 100% per the spec's double-tap.
-        if (isDoubleTap && lastSendSources.length > 0) {
-          send(lastSendSources, p.id, 1.0);
-        } else if (selection.size > 0) {
-          lastSendSources = [...selection];
-          send(lastSendSources, p.id, SEND_FRACTION);
-          selection.clear();
-        }
+        // Enemy/neutral planet: passive info tooltip only — never an action.
+        input.view.tooltip = { planetId: p.id, shownAt: now };
       } else {
-        // Empty space: tap deselects; double-tap selects every owned planet.
-        if (isDoubleTap) {
-          for (const pl of state.planets) {
-            if (pl.owner === PLAYER) selection.add(pl.id);
-          }
-          if (selection.size > 0) hapticTick();
-        } else {
-          selection.clear();
-        }
-        lastSendSources = [];
+        // Empty space: deselect (single and double alike).
+        selection.clear();
       }
       lastTapAt = now;
       lastTapPlanetId = p ? p.id : -1;
     } else if (mode === "dragPlanet") {
-      // --- Aimed send: release on/near a target (snap ~20pt to planet edge).
+      // --- Aimed send: release on/near a target (snap ~44pt); release on
+      // empty space cancels and keeps the selection.
       const target = hitTest(state.planets, curWorld.x, curWorld.y, SNAP_DIST);
       if (target) {
-        lastSendSources = [...selection];
-        send(lastSendSources, target.id, SEND_FRACTION);
+        send([...selection], target.id, input.view.sendFraction);
         selection.clear();
         lastTapAt = now;
         lastTapPlanetId = target.id;
       }
-      // No target: keep the selection — the drag still selected the planet.
     }
     // dragBox: selection was updated live; nothing to finalize.
 

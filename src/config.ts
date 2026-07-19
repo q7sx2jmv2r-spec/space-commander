@@ -32,9 +32,73 @@ export const NEUTRAL_GARRISON: Record<Size, { min: number; max: number }> = {
 /** Default fraction of garrison launched per send. */
 export const SEND_FRACTION = 0.5;
 
-/** Display/hit-test radius per size class. Rendering and input only — the
- * simulation itself never reads radii. */
+/** Send-amount steps the QUA-131 chip cycles through (must include the
+ * SEND_FRACTION default). */
+export const FRACTION_STEPS: readonly number[] = [0.25, 0.5, 1];
+
+/** Visual/hit-test radius per size class. Also the basis of interception-zone
+ * radii (QUA-129: zone = visual radius × zoneRadiusFactor), so this constant
+ * is sim-affecting — change it and replays change. */
 export const SIZE_RADIUS: Record<Size, number> = { small: 32, medium: 44, large: 56 };
+
+// ---------------------------------------------------------------------------
+// Interception zones (QUA-129). Owned planets project a circular zone that
+// strips ships from enemy fleets flying through it, scaling with the live
+// garrison, development level, and defence spec. Neutrals project none.
+// ---------------------------------------------------------------------------
+
+export const INTERCEPT = {
+  /** Zone radius = SIZE_RADIUS[size] × this. */
+  zoneRadiusFactor: 2.5,
+  /** Ships/sec lost per (displayed) garrison ship — 5% of the garrison count
+   * per second, per the spec's worked example. */
+  damageRate: 0.05,
+} as const;
+
+// ---------------------------------------------------------------------------
+// Planet development (QUA-128). Planets level up the longer one owner holds
+// them uninterrupted; capture resets to L1. Level scales production, the
+// garrison cap, and interception strength (QUA-129). One tunable object per
+// the ticket; arrays are indexed by level-1.
+// ---------------------------------------------------------------------------
+
+export const DEVELOPMENT = {
+  /** Seconds of uninterrupted holding to reach L1/L2/L3. */
+  levelTimes: [0, 90, 240],
+  productionMult: [1, 1.5, 2],
+  capMult: [1, 1.5, 2],
+  /** Interception-zone damage scaling per level (consumed by QUA-129). */
+  interceptMult: [1, 1.5, 2],
+} as const;
+
+/** Base (L1) garrison cap per size — a SOFT cap: production halts at the cap,
+ * but reinforcement and capture surpluses may exceed it and are never clamped
+ * down (silently deleting arriving ships would be invisible loss). Roughly a
+ * minute of unattended base production per size. */
+export const GARRISON_CAP: Record<Size, number> = { small: 30, medium: 50, large: 80 };
+
+// ---------------------------------------------------------------------------
+// Planet specialisation (QUA-130). Level (QUA-128) is *how much*, spec is
+// *what kind*: effects multiply with development. Converting costs ships and
+// downtime so it's a commitment, not a free toggle mid-fight. Capture clears
+// specialisation along with development.
+// ---------------------------------------------------------------------------
+
+export type Spec = "standard" | "defence" | "naval" | "economy";
+
+export const SPECS = {
+  /** Ships deducted from the garrison to start a conversion. */
+  costShips: 15,
+  /** Seconds of conversion downtime: no production, no spec bonuses. */
+  convertTime: 10,
+  /** Garrison defends at ×2; interception zone ×1.6 radius, ×2 damage. */
+  defence: { defendMult: 2, zoneRadiusMult: 1.6, zoneDamageMult: 2 },
+  /** Shipyard: ×1.5 production but a glass jaw on defence. */
+  naval: { productionMult: 1.5, defendMult: 0.75 },
+  /** Own production halves, but every economy planet adds +15% empire-wide
+   * production (additive stacking). The greedy option you must protect. */
+  economy: { productionMult: 0.5, empireBonus: 0.15 },
+} as const;
 
 // ---------------------------------------------------------------------------
 // AI difficulty tiers (QUA-123). Pure data — ai.ts interprets these; adding a
@@ -68,6 +132,37 @@ export interface AiTierConfig {
   combinesFleets: boolean;
   /** Prioritizes enemy planets that were just emptied by a big send. */
   countersEmptied: boolean;
+  // --- QUA-132: zone awareness, specialisation strategy, valuation ---
+  /** Reject any send whose predicted interception losses (predict.ts — the
+   * same estimator as the player preview) exceed this fraction of the fleet. */
+  maxAttritionFraction: number;
+  /** Stage too-hot attacks through a friendly/capturable hop that shortens
+   * the exposed final leg — hard's corridor game. */
+  stagesHops: boolean;
+  /** Converts planets (QUA-130): border → defence, interior → economy/naval. */
+  usesSpecs: boolean;
+  /** Re-converts planets whose desired spec changed as the border moved. */
+  reconsidersSpecs: boolean;
+  /** A planet is "border" when an enemy planet is among its k nearest. */
+  borderNeighbors: number;
+  /** Interior planets nearest the front to keep as Naval shipyards. */
+  navalCount: number;
+  /** Convert only when the garrison comfortably exceeds the 15-ship cost;
+   * below it, the candidate planet is "groomed" — spared as an attack source
+   * so it can bank production toward the conversion. */
+  convertGarrisonMin: number;
+  /** Specialisation also needs the empire's total planetside garrison at or
+   * above this (affordability) — together with not being behind on planet
+   * count (dominance), this keeps conversion taxes out of desperate fights. */
+  specsMinEmpireGarrison: number;
+  /** Target-score multiplier for enemy economy planets (<1 = juicier). */
+  economyScoreFactor: number;
+  /** Target-score multiplier for an L3 defence fortress when overwhelming
+   * force isn't available (>1 = near-untouchable). */
+  fortressScoreFactor: number;
+  /** Additive score per target development level above 1 — favours the
+   * low-level fringe of an enemy's territory over its developed core. */
+  levelWeight: number;
 }
 
 export const AI_TIERS: Record<AiTier, AiTierConfig> = {
@@ -83,6 +178,17 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     checksFeasibility: false,
     combinesFleets: false,
     countersEmptied: false,
+    maxAttritionFraction: 0.6, // will happily fly through moderate fire
+    stagesHops: false,
+    usesSpecs: false, // easy never converts
+    reconsidersSpecs: false,
+    borderNeighbors: 3,
+    navalCount: 0,
+    convertGarrisonMin: 20,
+    specsMinEmpireGarrison: 50,
+    economyScoreFactor: 1, // no spec/level awareness in easy's scoring
+    fortressScoreFactor: 1,
+    levelWeight: 0,
   },
   medium: {
     interval: { min: 2, max: 3 },
@@ -96,6 +202,17 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     checksFeasibility: true,
     combinesFleets: false,
     countersEmptied: false,
+    maxAttritionFraction: 0.4,
+    stagesHops: false, // medium re-targets rather than staging corridors
+    usesSpecs: true,
+    reconsidersSpecs: false,
+    borderNeighbors: 3,
+    navalCount: 1,
+    convertGarrisonMin: 20,
+    specsMinEmpireGarrison: 45,
+    economyScoreFactor: 0.7,
+    fortressScoreFactor: 4,
+    levelWeight: 3,
   },
   hard: {
     interval: { min: 1, max: 2 },
@@ -109,6 +226,17 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     checksFeasibility: true,
     combinesFleets: true,
     countersEmptied: true,
+    maxAttritionFraction: 0.25,
+    stagesHops: true, // captures stepping stones toward a target
+    usesSpecs: true,
+    reconsidersSpecs: true,
+    borderNeighbors: 3,
+    navalCount: 2,
+    convertGarrisonMin: 20,
+    specsMinEmpireGarrison: 40,
+    economyScoreFactor: 0.6,
+    fortressScoreFactor: 8,
+    levelWeight: 5,
   },
 };
 
