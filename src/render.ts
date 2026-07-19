@@ -324,19 +324,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     g.fillText(`${fps} fps`, hudX, hudY);
     g.fillText(`tick ${curr.tick}`, hudX, hudY + 18);
     g.fillText(`seed ${curr.seed}`, hudX, hudY + 36);
-
-    if (curr.phase !== "playing") {
-      g.fillStyle = "rgba(11, 14, 26, 0.7)";
-      g.fillRect(0, 0, cssW, cssH);
-      g.textAlign = "center";
-      g.textBaseline = "middle";
-      g.fillStyle = curr.phase === "playerWon" ? "#4da6ff" : "#ff5d5d";
-      g.font = "bold 48px system-ui, sans-serif";
-      g.fillText(curr.phase === "playerWon" ? "Victory" : "Defeat", cssW / 2, cssH / 2 - 20);
-      g.fillStyle = "#ffffff";
-      g.font = "18px system-ui, sans-serif";
-      g.fillText("Tap to play again", cssW / 2, cssH / 2 + 30);
-    }
+    // Game-over presentation is the DOM end panel (QUA-124), not the canvas.
   }
 
   return { render };
