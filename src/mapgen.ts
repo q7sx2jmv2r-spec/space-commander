@@ -174,7 +174,7 @@ function tryBuild(rng: RngState, factionCount: FactionCount): Planet[] | null {
       const x = CX + rad * Math.cos(ang);
       const y = CY + rad * Math.sin(ang);
       if (!fits(planets, x, y, centerR)) continue;
-      planets.push({ id: planets.length, x, y, size: centerSize, owner: "neutral", garrison: neutralGarrison(rng, centerSize) });
+      planets.push({ id: planets.length, x, y, size: centerSize, owner: "neutral", garrison: neutralGarrison(rng, centerSize), heldTicks: 0 });
       placed = true;
       break;
     }
@@ -260,6 +260,7 @@ function tryBuild(rng: RngState, factionCount: FactionCount): Planet[] | null {
         size: sp.size,
         owner: isHome ? owner : "neutral",
         garrison: sp.garrison,
+        heldTicks: 0,
       });
     }
   }

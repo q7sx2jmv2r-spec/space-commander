@@ -2,7 +2,7 @@
 // The world→screen transform lives here and input.ts uses screenToWorld so
 // there is exactly one mapping in the codebase.
 
-import { GameState, Fleet, Owner, WORLD_W, WORLD_H } from "./sim";
+import { GameState, Fleet, Owner, WORLD_W, WORLD_H, planetLevel } from "./sim";
 import { SIZE_RADIUS } from "./config";
 import type { InputView } from "./input";
 
@@ -28,6 +28,11 @@ const OWNER_STROKE: Record<Owner, string> = {
 const VIEW_MARGIN = 12;
 /** Capture flash: expanding ring drawn for this long after an owner change. */
 const FLASH_MS = 600;
+/** Level-up pulse (QUA-128): shorter, thinner sibling of the capture flash. */
+const LEVEL_PULSE_MS = 450;
+/** Level pips (QUA-128): dot radius and angular spacing on the planet rim. */
+const PIP_RADIUS = 4;
+const PIP_ANGLE_STEP = 0.24;
 /** Minimum on-screen garrison font (css px) so counters stay legible on
  * phones, where the world scale can shrink text below readability. */
 const MIN_GARRISON_FONT = 14;
@@ -120,6 +125,11 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   // drew last frame. Indexed by planet id (== array index, stable per game).
   let flashOwners: Owner[] = [];
   let flashAt: number[] = [];
+  // Level-up pulse (QUA-128): same diff-based pattern, keyed on the derived
+  // level. Pulses only on an increase — the capture reset drops the level, and
+  // the capture flash already covers that moment.
+  let levelSeen: number[] = [];
+  let levelPulseAt: number[] = [];
   let lastSeenTick = -1;
 
   function updateCaptureFlashes(curr: GameState, now: number): void {
@@ -129,7 +139,12 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     if (flashOwners.length !== n || curr.tick < lastSeenTick) {
       flashOwners = new Array<Owner>(n);
       flashAt = new Array<number>(n).fill(-1e9);
-      for (let i = 0; i < n; i++) flashOwners[i] = curr.planets[i]!.owner;
+      levelSeen = new Array<number>(n);
+      levelPulseAt = new Array<number>(n).fill(-1e9);
+      for (let i = 0; i < n; i++) {
+        flashOwners[i] = curr.planets[i]!.owner;
+        levelSeen[i] = planetLevel(curr.planets[i]!);
+      }
     } else {
       for (let i = 0; i < n; i++) {
         const owner = curr.planets[i]!.owner;
@@ -137,6 +152,9 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
           flashOwners[i] = owner;
           flashAt[i] = now;
         }
+        const level = planetLevel(curr.planets[i]!);
+        if (level > levelSeen[i]!) levelPulseAt[i] = now;
+        levelSeen[i] = level;
       }
     }
     lastSeenTick = curr.tick;
@@ -197,12 +215,38 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
         g.globalAlpha = 1;
       }
 
+      const pulseAge = now - levelPulseAt[p.id]!;
+      if (pulseAge < LEVEL_PULSE_MS) {
+        const pt = pulseAge / LEVEL_PULSE_MS;
+        g.globalAlpha = 1 - pt;
+        g.strokeStyle = "#ffffff";
+        g.lineWidth = 1.5 + 3 * (1 - pt);
+        g.beginPath();
+        g.arc(p.x, p.y, r + 4 + 30 * pt, 0, Math.PI * 2);
+        g.stroke();
+        g.globalAlpha = 1;
+      }
+
       if (selection.has(p.id)) {
         g.strokeStyle = "#ffffff";
         g.lineWidth = 4;
         g.beginPath();
         g.arc(p.x, p.y, r + 8, 0, Math.PI * 2);
         g.stroke();
+      }
+
+      // Level pips (QUA-128): 1–3 notch dots on the upper rim — readable at a
+      // glance on a phone, no text. Neutrals never develop, so no pips.
+      if (p.owner !== "neutral") {
+        const level = planetLevel(p);
+        const start = -Math.PI / 2 - ((level - 1) / 2) * PIP_ANGLE_STEP;
+        g.fillStyle = "#ffffff";
+        for (let i = 0; i < level; i++) {
+          const a = start + i * PIP_ANGLE_STEP;
+          g.beginPath();
+          g.arc(p.x + r * Math.cos(a), p.y + r * Math.sin(a), PIP_RADIUS, 0, Math.PI * 2);
+          g.fill();
+        }
       }
 
       // Font size floors at MIN_GARRISON_FONT css px regardless of world

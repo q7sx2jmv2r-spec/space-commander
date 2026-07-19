@@ -37,6 +37,28 @@ export const SEND_FRACTION = 0.5;
 export const SIZE_RADIUS: Record<Size, number> = { small: 32, medium: 44, large: 56 };
 
 // ---------------------------------------------------------------------------
+// Planet development (QUA-128). Planets level up the longer one owner holds
+// them uninterrupted; capture resets to L1. Level scales production, the
+// garrison cap, and interception strength (QUA-129). One tunable object per
+// the ticket; arrays are indexed by level-1.
+// ---------------------------------------------------------------------------
+
+export const DEVELOPMENT = {
+  /** Seconds of uninterrupted holding to reach L1/L2/L3. */
+  levelTimes: [0, 90, 240],
+  productionMult: [1, 1.5, 2],
+  capMult: [1, 1.5, 2],
+  /** Interception-zone damage scaling per level (consumed by QUA-129). */
+  interceptMult: [1, 1.5, 2],
+} as const;
+
+/** Base (L1) garrison cap per size — a SOFT cap: production halts at the cap,
+ * but reinforcement and capture surpluses may exceed it and are never clamped
+ * down (silently deleting arriving ships would be invisible loss). Roughly a
+ * minute of unattended base production per size. */
+export const GARRISON_CAP: Record<Size, number> = { small: 30, medium: 50, large: 80 };
+
+// ---------------------------------------------------------------------------
 // AI difficulty tiers (QUA-123). Pure data — ai.ts interprets these; adding a
 // tier means adding a block here, never new logic. Tuned by hand in QUA-126.
 // ---------------------------------------------------------------------------

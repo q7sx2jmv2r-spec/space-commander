@@ -2,8 +2,8 @@
 // (npm run test:sim), which doubles as proof the sim is DOM-free. Throws on
 // failure so node exits nonzero without needing process/@types/node.
 
-import { TICK_DT, PRODUCTION } from "../config";
-import { Fleet, GameState, Planet, sendFleet, tick } from "../sim";
+import { TICK_DT, TICK_RATE, PRODUCTION, DEVELOPMENT, GARRISON_CAP } from "../config";
+import { Fleet, GameState, Planet, sendFleet, tick, planetLevel, garrisonCap } from "../sim";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(`sim test FAILED: ${msg}`);
@@ -29,7 +29,7 @@ function mkState(planets: Planet[], fleets: Fleet[] = []): GameState {
 }
 
 function planet(id: number, opts: Partial<Planet>): Planet {
-  return { id, x: 0, y: 0, size: "medium", owner: "neutral", garrison: 0, ...opts };
+  return { id, x: 0, y: 0, size: "medium", owner: "neutral", garrison: 0, heldTicks: 0, ...opts };
 }
 
 // 1. Production accrual: per-size rates; neutrals produce nothing.
@@ -47,6 +47,98 @@ function planet(id: number, opts: Partial<Planet>): Planet {
   closeTo(s.planets[2]!.garrison, 3.0, "large production over 2s");
   closeTo(s.planets[3]!.garrison, 7, "neutral produced nothing");
   assert(s.tick === 2, "tick counter incremented once per tick() call");
+}
+
+// 1b. Development levels (QUA-128): heldTicks accrues for owned planets only;
+// the level flips at exactly 90s/240s held; neutrals never develop.
+{
+  const L2_TICKS = DEVELOPMENT.levelTimes[1] * TICK_RATE;
+  const L3_TICKS = DEVELOPMENT.levelTimes[2] * TICK_RATE;
+
+  const s = mkState([
+    planet(0, { owner: "player" }),
+    planet(1, { owner: "neutral", garrison: 5, x: 300 }),
+  ]);
+  tick(s, TICK_DT);
+  assert(s.planets[0]!.heldTicks === 1, "owned planet accrued a held tick");
+  assert(s.planets[1]!.heldTicks === 0, "neutral planet accrued nothing");
+
+  const p = planet(0, { owner: "player" });
+  p.heldTicks = L2_TICKS - 1;
+  assert(planetLevel(p) === 1, "one tick short of 90s is still L1");
+  p.heldTicks = L2_TICKS;
+  assert(planetLevel(p) === 2, "exactly 90s held reaches L2");
+  p.heldTicks = L3_TICKS - 1;
+  assert(planetLevel(p) === 2, "one tick short of 240s is still L2");
+  p.heldTicks = L3_TICKS;
+  assert(planetLevel(p) === 3, "exactly 240s held reaches L3");
+  p.owner = "neutral";
+  assert(planetLevel(p) === 1, "neutral is always L1 regardless of heldTicks");
+}
+
+// 1c. Development production multipliers: L2 produces ×1.5, L3 ×2.
+{
+  const l2 = planet(0, { owner: "player" });
+  l2.heldTicks = DEVELOPMENT.levelTimes[1] * TICK_RATE;
+  const l3 = planet(1, { owner: "player", x: 300 });
+  l3.heldTicks = DEVELOPMENT.levelTimes[2] * TICK_RATE;
+  const s = mkState([l2, l3]);
+  tick(s, 1);
+  closeTo(s.planets[0]!.garrison, PRODUCTION.medium * 1.5, "L2 production ×1.5");
+  closeTo(s.planets[1]!.garrison, PRODUCTION.medium * 2, "L3 production ×2");
+}
+
+// 1d. Soft garrison cap: production halts at the cap (clamped exactly), but
+// reinforcement pushes past it and is never clamped down; the cap itself
+// scales with level.
+{
+  const s = mkState([planet(0, { owner: "player", garrison: GARRISON_CAP.medium - 0.5 })]);
+  tick(s, 1);
+  closeTo(s.planets[0]!.garrison, GARRISON_CAP.medium, "production clamps at the cap");
+  tick(s, 1);
+  closeTo(s.planets[0]!.garrison, GARRISON_CAP.medium, "at-cap planet produces nothing");
+
+  const capL2 = planet(0, { owner: "player", garrison: GARRISON_CAP.medium });
+  capL2.heldTicks = DEVELOPMENT.levelTimes[1] * TICK_RATE;
+  closeTo(garrisonCap(capL2), GARRISON_CAP.medium * 1.5, "L2 cap ×1.5");
+  const s2 = mkState([capL2]);
+  tick(s2, 1);
+  closeTo(
+    s2.planets[0]!.garrison,
+    GARRISON_CAP.medium + PRODUCTION.medium * 1.5,
+    "L2 planet produces past the L1 cap"
+  );
+
+  // Reinforcement exceeds the cap and stays there (soft cap, no clamping).
+  const s3 = mkState(
+    [
+      planet(0, { owner: "player" }),
+      planet(1, { x: 100, owner: "player", garrison: GARRISON_CAP.medium }),
+    ],
+    [{ id: 0, owner: "player", ships: 20, originId: 0, destId: 1, progress: 0.999 }]
+  );
+  tick(s3, TICK_DT);
+  closeTo(
+    s3.planets[1]!.garrison,
+    GARRISON_CAP.medium + 20,
+    "reinforcement lands above the cap un-clamped"
+  );
+  tick(s3, TICK_DT);
+  closeTo(s3.planets[1]!.garrison, GARRISON_CAP.medium + 20, "above-cap garrison stops producing");
+}
+
+// 1e. Capture resets development: the flipped planet drops to heldTicks 0/L1.
+{
+  const target = planet(1, { x: 100, owner: "ai1", garrison: 5 });
+  target.heldTicks = DEVELOPMENT.levelTimes[2] * TICK_RATE; // an L3 planet
+  const s = mkState(
+    [planet(0, { owner: "player" }), target],
+    [{ id: 0, owner: "player", ships: 8, originId: 0, destId: 1, progress: 0.999 }]
+  );
+  tick(s, TICK_DT);
+  assert(s.planets[1]!.owner === "player", "planet flipped");
+  assert(s.planets[1]!.heldTicks === 0, "capture reset heldTicks");
+  assert(planetLevel(s.planets[1]!) === 1, "captured L3 planet resets to L1");
 }
 
 // 2. Fleet travel timing: full screen width (1000u) in 5s = 300 ticks at 60Hz.

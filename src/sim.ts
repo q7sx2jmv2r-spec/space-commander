@@ -3,7 +3,16 @@
 // Math.random or Date.now — all randomness flows through the RngState inside
 // GameState, and draw order is part of the determinism contract.
 
-import { Owner, Size, TICK_DT, PRODUCTION, SHIP_SPEED } from "./config";
+import {
+  Owner,
+  Size,
+  TICK_DT,
+  TICK_RATE,
+  PRODUCTION,
+  SHIP_SPEED,
+  DEVELOPMENT,
+  GARRISON_CAP,
+} from "./config";
 import { RngState } from "./rng";
 import { generateMap } from "./mapgen";
 import { AiState, aiDecide, nextDecisionDelay } from "./ai";
@@ -23,6 +32,10 @@ export interface Planet {
   size: Size;
   owner: Owner;
   garrison: number; // fractional internally; use Math.floor for display/sending
+  /** Ticks held by the current owner (QUA-128). Integer, incremented once per
+   * tick; reset to 0 when the planet changes hands. Level is derived from
+   * this via planetLevel(), never stored. */
+  heldTicks: number;
 }
 
 export interface Fleet {
@@ -69,6 +82,21 @@ export interface GameState {
  * seed. Use generateMap directly for other faction counts. */
 export function createGame(seed: number): GameState {
   return generateMap(seed, 2);
+}
+
+/** Development level (QUA-128), derived from time held so it can never desync
+ * from heldTicks. Neutral planets never develop. */
+export function planetLevel(p: Planet): 1 | 2 | 3 {
+  if (p.owner === NEUTRAL) return 1;
+  if (p.heldTicks >= DEVELOPMENT.levelTimes[2] * TICK_RATE) return 3;
+  if (p.heldTicks >= DEVELOPMENT.levelTimes[1] * TICK_RATE) return 2;
+  return 1;
+}
+
+/** Soft garrison cap (QUA-128): production stops here; reinforcement and
+ * capture surpluses may exceed it (see GARRISON_CAP). */
+export function garrisonCap(p: Planet): number {
+  return GARRISON_CAP[p.size] * DEVELOPMENT.capMult[planetLevel(p) - 1]!;
 }
 
 function dist(ax: number, ay: number, bx: number, by: number): number {
@@ -125,22 +153,28 @@ function resolveArrival(planet: Planet, fleet: Fleet): void {
   } else if (fleet.ships > planet.garrison) {
     planet.owner = fleet.owner;
     planet.garrison = fleet.ships - planet.garrison;
+    planet.heldTicks = 0; // development resets on capture (QUA-128)
   } else {
     planet.garrison -= fleet.ships;
   }
 }
 
 /** Advance the simulation by one step of `dt` seconds. Spec step order
- * (QUA-119) — do not reorder:
- *   1. production on owned planets
+ * (QUA-119, extended by QUA-128) — do not reorder:
+ *   1. production + development on owned planets
  *   2. advance fleet progress
  *   3. resolve arrivals, simultaneous arrivals in FLEET-ID order
  *   4. increment tick counter */
 export function tick(state: GameState, dt: number): GameState {
   for (const p of state.planets) {
-    if (p.owner !== NEUTRAL) {
-      p.garrison += PRODUCTION[p.size] * dt;
+    if (p.owner === NEUTRAL) continue; // neutrals neither produce nor develop
+    const cap = garrisonCap(p);
+    if (p.garrison < cap) {
+      const rate = PRODUCTION[p.size] * DEVELOPMENT.productionMult[planetLevel(p) - 1]!;
+      p.garrison = Math.min(cap, p.garrison + rate * dt);
     }
+    // After production, so a level-up takes effect from the next tick.
+    p.heldTicks += 1;
   }
 
   for (const f of state.fleets) {

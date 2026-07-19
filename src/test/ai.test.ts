@@ -27,7 +27,7 @@ function mkState(planets: Planet[], fleets: Fleet[] = [], ai: AiState[] = []): G
 }
 
 function planet(id: number, opts: Partial<Planet>): Planet {
-  return { id, x: 0, y: 0, size: "medium", owner: "neutral", garrison: 0, ...opts };
+  return { id, x: 0, y: 0, size: "medium", owner: "neutral", garrison: 0, heldTicks: 0, ...opts };
 }
 
 function mkAi(tier: AiTier): AiState {

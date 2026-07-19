@@ -56,9 +56,9 @@ function acceptanceState(): GameState {
     seed: 0,
     rng: { s: 0 },
     planets: [
-      { id: 0, x: 220, y: 1320, size: "medium", owner: "player", garrison: 20 },
-      { id: 1, x: 780, y: 280, size: "medium", owner: "ai1", garrison: 20 },
-      { id: 2, x: 730, y: 1140, size: "small", owner: "neutral", garrison: 8 },
+      { id: 0, x: 220, y: 1320, size: "medium", owner: "player", garrison: 20, heldTicks: 0 },
+      { id: 1, x: 780, y: 280, size: "medium", owner: "ai1", garrison: 20, heldTicks: 0 },
+      { id: 2, x: 730, y: 1140, size: "small", owner: "neutral", garrison: 8, heldTicks: 0 },
     ],
     fleets: [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 2, progress: 0 }],
     nextFleetId: 1,
@@ -75,8 +75,8 @@ function endScenario(win: boolean): GameState {
     seed: 0,
     rng: { s: 0 },
     planets: [
-      { id: 0, x: 200, y: 1200, size: "medium", owner: "player", garrison: win ? 20 : 5 },
-      { id: 1, x: 800, y: 400, size: "medium", owner: "ai1", garrison: win ? 5 : 20 },
+      { id: 0, x: 200, y: 1200, size: "medium", owner: "player", garrison: win ? 20 : 5, heldTicks: 0 },
+      { id: 1, x: 800, y: 400, size: "medium", owner: "ai1", garrison: win ? 5 : 20, heldTicks: 0 },
     ],
     fleets: [
       win
