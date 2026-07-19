@@ -27,7 +27,19 @@ function mkState(planets: Planet[], fleets: Fleet[] = [], ai: AiState[] = []): G
 }
 
 function planet(id: number, opts: Partial<Planet>): Planet {
-  return { id, x: 0, y: 0, size: "medium", owner: "neutral", garrison: 0, heldTicks: 0, ...opts };
+  return {
+    id,
+    x: 0,
+    y: 0,
+    size: "medium",
+    owner: "neutral",
+    garrison: 0,
+    heldTicks: 0,
+    spec: "standard",
+    nextSpec: "standard",
+    convertTicks: 0,
+    ...opts,
+  };
 }
 
 function mkAi(tier: AiTier): AiState {
@@ -97,7 +109,8 @@ function mkAi(tier: AiTier): AiState {
   );
   const cmds = aiDecide(s, mkAi("medium"));
   assert(cmds.length === 1, `expected exactly the reinforcement (got ${cmds.length})`);
-  assert(cmds[0]!.to === 0 && cmds[0]!.from[0] === 1, "reinforcement not from helper to threatened planet");
+  const c = cmds[0]!;
+  assert(c.type === "send" && c.to === 0 && c.from[0] === 1, "reinforcement not from helper to threatened planet");
 }
 
 // 6. Guardrail: never leave a planet unable to defend a known incoming fleet.
@@ -122,9 +135,12 @@ function mkAi(tier: AiTier): AiState {
     planet(3, { owner: "player", garrison: 13, x: 600 }),
   ]);
   const cmds = aiDecide(s, mkAi("hard"));
-  const pooled = cmds.find((c) => c.to === 3);
+  const pooled = cmds.find((c) => c.type === "send" && c.to === 3);
   assert(pooled !== undefined, `hard did not attack the big target (${JSON.stringify(cmds)})`);
-  assert(pooled!.from.length >= 2, `hard did not pool sources (${JSON.stringify(pooled)})`);
+  assert(
+    pooled!.type === "send" && pooled!.from.length >= 2,
+    `hard did not pool sources (${JSON.stringify(pooled)})`
+  );
 }
 
 // 8. Hard counter-attacks a just-emptied enemy planet over a marginally

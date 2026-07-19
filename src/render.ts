@@ -2,8 +2,8 @@
 // The world→screen transform lives here and input.ts uses screenToWorld so
 // there is exactly one mapping in the codebase.
 
-import { GameState, Fleet, Owner, WORLD_W, WORLD_H, planetLevel } from "./sim";
-import { SIZE_RADIUS } from "./config";
+import { GameState, Fleet, Owner, Planet, WORLD_W, WORLD_H, planetLevel } from "./sim";
+import { SIZE_RADIUS, SPECS, TICK_RATE } from "./config";
 import type { InputView } from "./input";
 
 const BG = "#0b0e1a";
@@ -33,6 +33,10 @@ const LEVEL_PULSE_MS = 450;
 /** Level pips (QUA-128): dot radius and angular spacing on the planet rim. */
 const PIP_RADIUS = 4;
 const PIP_ANGLE_STEP = 0.24;
+/** Spec glyph half-size (QUA-130), drawn on the lower rim. */
+const GLYPH = 5;
+/** Total conversion downtime in ticks, for the radial progress sweep. */
+const CONVERT_TICKS_TOTAL = Math.round(SPECS.convertTime * TICK_RATE);
 /** Minimum on-screen garrison font (css px) so counters stay legible on
  * phones, where the world scale can shrink text below readability. */
 const MIN_GARRISON_FONT = 14;
@@ -249,12 +253,62 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
         }
       }
 
+      drawSpecMarkers(p, r);
+
       // Font size floors at MIN_GARRISON_FONT css px regardless of world
       // scale — garrison counts must stay readable on small phone screens.
       const fontSize = Math.max(MIN_GARRISON_FONT / scale, r * 0.7);
       g.textAlign = "center";
       g.textBaseline = "middle";
       haloText(String(Math.floor(p.garrison)), p.x, p.y, fontSize);
+    }
+  }
+
+  /** Specialisation identity (QUA-130): a white shape glyph on the lower rim
+   * — shield (defence), chevron (naval), diamond (economy) — so types read by
+   * shape, never colour alone. A converting planet keeps its old glyph (its
+   * bonuses are equally stale) under a radial progress sweep. */
+  function drawSpecMarkers(p: Planet, r: number): void {
+    if (p.spec !== "standard") {
+      const gx = p.x;
+      const gy = p.y + r;
+      g.fillStyle = "#ffffff";
+      if (p.spec === "defence") {
+        // Shield: flat top, point down.
+        g.beginPath();
+        g.moveTo(gx - GLYPH, gy - GLYPH * 0.8);
+        g.lineTo(gx + GLYPH, gy - GLYPH * 0.8);
+        g.lineTo(gx, gy + GLYPH);
+        g.closePath();
+        g.fill();
+      } else if (p.spec === "naval") {
+        // Chevron / wing.
+        g.strokeStyle = "#ffffff";
+        g.lineWidth = 2.5;
+        g.beginPath();
+        g.moveTo(gx - GLYPH, gy + GLYPH * 0.6);
+        g.lineTo(gx, gy - GLYPH * 0.6);
+        g.lineTo(gx + GLYPH, gy + GLYPH * 0.6);
+        g.stroke();
+      } else {
+        // Economy: diamond.
+        g.beginPath();
+        g.moveTo(gx, gy - GLYPH);
+        g.lineTo(gx + GLYPH, gy);
+        g.lineTo(gx, gy + GLYPH);
+        g.lineTo(gx - GLYPH, gy);
+        g.closePath();
+        g.fill();
+      }
+    }
+
+    if (p.convertTicks > 0) {
+      const frac = 1 - p.convertTicks / CONVERT_TICKS_TOTAL;
+      g.strokeStyle = "#ffffff";
+      g.lineWidth = 3;
+      g.beginPath();
+      g.arc(p.x, p.y, r + 4, -Math.PI / 2, -Math.PI / 2 + frac * 2 * Math.PI);
+      g.stroke();
     }
   }
 

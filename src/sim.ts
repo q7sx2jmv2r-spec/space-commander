@@ -6,18 +6,20 @@
 import {
   Owner,
   Size,
+  Spec,
   TICK_DT,
   TICK_RATE,
   PRODUCTION,
   SHIP_SPEED,
   DEVELOPMENT,
   GARRISON_CAP,
+  SPECS,
 } from "./config";
 import { RngState } from "./rng";
 import { generateMap } from "./mapgen";
 import { AiState, aiDecide, nextDecisionDelay } from "./ai";
 
-export type { Owner, Size };
+export type { Owner, Size, Spec };
 export type { AiState };
 export { TICK_DT, TICK_RATE, WORLD_W, WORLD_H } from "./config";
 
@@ -36,6 +38,12 @@ export interface Planet {
    * tick; reset to 0 when the planet changes hands. Level is derived from
    * this via planetLevel(), never stored. */
   heldTicks: number;
+  /** Specialisation (QUA-130). `spec` keeps its old value while a conversion
+   * runs (convertTicks > 0, completing into `nextSpec`), but its bonuses are
+   * offline during the downtime. Capture resets all three. */
+  spec: Spec;
+  nextSpec: Spec;
+  convertTicks: number;
 }
 
 export interface Fleet {
@@ -54,11 +62,19 @@ export interface SendCommand {
   owner: Owner;
   from: number[]; // source planet ids, sorted ascending
   to: number;
-  /** Fraction of each source garrison to send (0..1]. UI sends 0.5 on tap,
-   * 1.0 on double-tap. */
+  /** Fraction of each source garrison to send (0..1]. */
   fraction: number;
 }
-export type Command = SendCommand;
+
+/** Start converting an owned planet to a specialisation type (QUA-130). */
+export interface ConvertCommand {
+  type: "convert";
+  owner: Owner;
+  planet: number;
+  to: Spec;
+}
+
+export type Command = SendCommand | ConvertCommand;
 
 export type Phase = "playing" | "playerWon" | "aiWon";
 
@@ -99,6 +115,15 @@ export function garrisonCap(p: Planet): number {
   return GARRISON_CAP[p.size] * DEVELOPMENT.capMult[planetLevel(p) - 1]!;
 }
 
+/** Combat multiplier for a defending garrison (QUA-130): each defender is
+ * worth this many attackers. Spec bonuses are offline while converting. */
+export function defendMultiplier(p: Planet): number {
+  if (p.convertTicks > 0) return 1;
+  if (p.spec === "defence") return SPECS.defence.defendMult;
+  if (p.spec === "naval") return SPECS.naval.defendMult;
+  return 1;
+}
+
 function dist(ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax;
   const dy = by - ay;
@@ -133,10 +158,29 @@ export function sendFleet(
   });
 }
 
-/** Validate and apply a send command from a commander (player or AI): each
- * listed source must actually belong to the command's owner. */
+/** Start a specialisation conversion (QUA-130): costs SPECS.costShips from
+ * the garrison plus SPECS.convertTime seconds of downtime (no production, no
+ * spec bonuses). Re-converting later — even mid-conversion — is allowed and
+ * pays the full cost again. Invalid or unaffordable requests are silently
+ * ignored (stale UI input must never throw). */
+export function convertPlanet(state: GameState, cmd: ConvertCommand): void {
+  const p = state.planets[cmd.planet];
+  if (!p || p.owner !== cmd.owner) return;
+  if (p.garrison < SPECS.costShips) return;
+  if (cmd.to === p.spec && p.convertTicks === 0) return; // no-op re-convert
+  p.garrison -= SPECS.costShips;
+  p.nextSpec = cmd.to;
+  p.convertTicks = Math.round(SPECS.convertTime * TICK_RATE);
+}
+
+/** Validate and apply a command from a commander (player or AI): every
+ * referenced planet must actually belong to the command's owner. */
 export function applyCommand(state: GameState, cmd: Command): void {
   if (state.phase !== "playing") return;
+  if (cmd.type === "convert") {
+    convertPlanet(state, cmd);
+    return;
+  }
   for (const fromId of cmd.from) {
     const source = state.planets[fromId];
     if (!source || source.owner !== cmd.owner) continue;
@@ -145,32 +189,66 @@ export function applyCommand(state: GameState, cmd: Command): void {
 }
 
 /** Fleet arrival: ownership is evaluated at arrival time. Same owner
- * reinforces; otherwise attackers trade 1:1 with the garrison and the planet
- * flips if they exceed it (exact tie: defender holds at 0, owner unchanged). */
+ * reinforces; otherwise each defender is worth defendMultiplier(planet)
+ * attackers (QUA-130; ×1 reduces to a plain 1:1 trade) — the planet flips
+ * when the attackers exceed the multiplied garrison, paying its full
+ * multiplied price; a failed attack kills ships/mult defenders (exact tie:
+ * defender holds at 0, owner unchanged). Capture resets development and
+ * specialisation. */
 function resolveArrival(planet: Planet, fleet: Fleet): void {
   if (planet.owner === fleet.owner) {
     planet.garrison += fleet.ships;
-  } else if (fleet.ships > planet.garrison) {
+    return;
+  }
+  const mult = defendMultiplier(planet);
+  if (fleet.ships > planet.garrison * mult) {
     planet.owner = fleet.owner;
-    planet.garrison = fleet.ships - planet.garrison;
+    planet.garrison = fleet.ships - planet.garrison * mult;
     planet.heldTicks = 0; // development resets on capture (QUA-128)
+    planet.spec = "standard"; // capture clears specialisation (QUA-130)
+    planet.nextSpec = "standard";
+    planet.convertTicks = 0;
   } else {
-    planet.garrison -= fleet.ships;
+    planet.garrison -= fleet.ships / mult;
   }
 }
 
 /** Advance the simulation by one step of `dt` seconds. Spec step order
- * (QUA-119, extended by QUA-128) — do not reorder:
- *   1. production + development on owned planets
+ * (QUA-119, extended by QUA-128/130) — do not reorder:
+ *   1. production + development + conversion timers on owned planets
  *   2. advance fleet progress
  *   3. resolve arrivals, simultaneous arrivals in FLEET-ID order
  *   4. increment tick counter */
 export function tick(state: GameState, dt: number): GameState {
+  // Empire-wide economy bonus (QUA-130): count each owner's completed economy
+  // planets once, before the production loop — converting ones don't count.
+  const econCount: Partial<Record<Owner, number>> = {};
+  for (const p of state.planets) {
+    if (p.owner !== NEUTRAL && p.spec === "economy" && p.convertTicks === 0) {
+      econCount[p.owner] = (econCount[p.owner] ?? 0) + 1;
+    }
+  }
+
   for (const p of state.planets) {
     if (p.owner === NEUTRAL) continue; // neutrals neither produce nor develop
+    if (p.convertTicks > 0) {
+      // Converting: no production, but development continues (QUA-130).
+      p.convertTicks -= 1;
+      if (p.convertTicks === 0) p.spec = p.nextSpec;
+      p.heldTicks += 1;
+      continue;
+    }
     const cap = garrisonCap(p);
     if (p.garrison < cap) {
-      const rate = PRODUCTION[p.size] * DEVELOPMENT.productionMult[planetLevel(p) - 1]!;
+      const specMult =
+        p.spec === "naval"
+          ? SPECS.naval.productionMult
+          : p.spec === "economy"
+            ? SPECS.economy.productionMult
+            : 1;
+      const empireMult = 1 + SPECS.economy.empireBonus * (econCount[p.owner] ?? 0);
+      const rate =
+        PRODUCTION[p.size] * DEVELOPMENT.productionMult[planetLevel(p) - 1]! * specMult * empireMult;
       p.garrison = Math.min(cap, p.garrison + rate * dt);
     }
     // After production, so a level-up takes effect from the next tick.

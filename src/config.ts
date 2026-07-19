@@ -59,6 +59,29 @@ export const DEVELOPMENT = {
 export const GARRISON_CAP: Record<Size, number> = { small: 30, medium: 50, large: 80 };
 
 // ---------------------------------------------------------------------------
+// Planet specialisation (QUA-130). Level (QUA-128) is *how much*, spec is
+// *what kind*: effects multiply with development. Converting costs ships and
+// downtime so it's a commitment, not a free toggle mid-fight. Capture clears
+// specialisation along with development.
+// ---------------------------------------------------------------------------
+
+export type Spec = "standard" | "defence" | "naval" | "economy";
+
+export const SPECS = {
+  /** Ships deducted from the garrison to start a conversion. */
+  costShips: 15,
+  /** Seconds of conversion downtime: no production, no spec bonuses. */
+  convertTime: 10,
+  /** Garrison defends at ×2; interception zone ×1.6 radius, ×2 damage. */
+  defence: { defendMult: 2, zoneRadiusMult: 1.6, zoneDamageMult: 2 },
+  /** Shipyard: ×1.5 production but a glass jaw on defence. */
+  naval: { productionMult: 1.5, defendMult: 0.75 },
+  /** Own production halves, but every economy planet adds +15% empire-wide
+   * production (additive stacking). The greedy option you must protect. */
+  economy: { productionMult: 0.5, empireBonus: 0.15 },
+} as const;
+
+// ---------------------------------------------------------------------------
 // AI difficulty tiers (QUA-123). Pure data — ai.ts interprets these; adding a
 // tier means adding a block here, never new logic. Tuned by hand in QUA-126.
 // ---------------------------------------------------------------------------

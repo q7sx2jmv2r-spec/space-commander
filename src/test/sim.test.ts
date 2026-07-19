@@ -2,8 +2,17 @@
 // (npm run test:sim), which doubles as proof the sim is DOM-free. Throws on
 // failure so node exits nonzero without needing process/@types/node.
 
-import { TICK_DT, TICK_RATE, PRODUCTION, DEVELOPMENT, GARRISON_CAP } from "../config";
-import { Fleet, GameState, Planet, sendFleet, tick, planetLevel, garrisonCap } from "../sim";
+import { TICK_DT, TICK_RATE, PRODUCTION, DEVELOPMENT, GARRISON_CAP, SPECS } from "../config";
+import {
+  Fleet,
+  GameState,
+  Planet,
+  applyCommand,
+  sendFleet,
+  tick,
+  planetLevel,
+  garrisonCap,
+} from "../sim";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(`sim test FAILED: ${msg}`);
@@ -29,7 +38,19 @@ function mkState(planets: Planet[], fleets: Fleet[] = []): GameState {
 }
 
 function planet(id: number, opts: Partial<Planet>): Planet {
-  return { id, x: 0, y: 0, size: "medium", owner: "neutral", garrison: 0, heldTicks: 0, ...opts };
+  return {
+    id,
+    x: 0,
+    y: 0,
+    size: "medium",
+    owner: "neutral",
+    garrison: 0,
+    heldTicks: 0,
+    spec: "standard",
+    nextSpec: "standard",
+    convertTicks: 0,
+    ...opts,
+  };
 }
 
 // 1. Production accrual: per-size rates; neutrals produce nothing.
@@ -139,6 +160,138 @@ function planet(id: number, opts: Partial<Planet>): Planet {
   assert(s.planets[1]!.owner === "player", "planet flipped");
   assert(s.planets[1]!.heldTicks === 0, "capture reset heldTicks");
   assert(planetLevel(s.planets[1]!) === 1, "captured L3 planet resets to L1");
+}
+
+// 1f. Specialisation conversion (QUA-130): pays 15 ships up front, runs 10s
+// with no production, then the new spec applies; production resumes after.
+{
+  const s = mkState([planet(0, { owner: "player", garrison: 20 })]);
+  applyCommand(s, { type: "convert", owner: "player", planet: 0, to: "defence" });
+  const p = s.planets[0]!;
+  closeTo(p.garrison, 20 - SPECS.costShips, "conversion cost deducted immediately");
+  const total = Math.round(SPECS.convertTime * TICK_RATE);
+  assert(p.convertTicks === total, "conversion timer started");
+  assert(p.spec === "standard" && p.nextSpec === "defence", "old spec current until completion");
+
+  for (let t = 0; t < total; t++) tick(s, TICK_DT);
+  closeTo(p.garrison, 20 - SPECS.costShips, "no production during the 10s conversion");
+  assert(p.spec === "defence" && p.convertTicks === 0, "spec applied when the timer ran out");
+  tick(s, TICK_DT);
+  closeTo(p.garrison, 20 - SPECS.costShips + PRODUCTION.medium * TICK_DT, "production resumed");
+}
+
+// 1g. Conversion refusals are silent no-ops: below cost, wrong owner, and
+// re-converting to the current spec while idle.
+{
+  const s = mkState([
+    planet(0, { owner: "player", garrison: 10 }),
+    planet(1, { owner: "ai1", garrison: 20, x: 300 }),
+    planet(2, { owner: "player", garrison: 20, x: 600 }),
+  ]);
+  applyCommand(s, { type: "convert", owner: "player", planet: 0, to: "naval" });
+  assert(s.planets[0]!.convertTicks === 0, "below-cost convert refused");
+  closeTo(s.planets[0]!.garrison, 10, "below-cost convert deducted nothing");
+  applyCommand(s, { type: "convert", owner: "player", planet: 1, to: "naval" });
+  assert(s.planets[1]!.convertTicks === 0, "wrong-owner convert refused");
+  applyCommand(s, { type: "convert", owner: "player", planet: 2, to: "standard" });
+  assert(s.planets[2]!.convertTicks === 0, "same-spec convert is a no-op");
+  closeTo(s.planets[2]!.garrison, 20, "same-spec convert deducted nothing");
+}
+
+// 1h. Defence spec: garrison fights at ×2 — an attack that would flip a
+// standard planet fails (killing ships/mult defenders), and a flip pays the
+// full multiplied price. Capture clears the spec.
+{
+  const mk = (ships: number) =>
+    mkState(
+      [
+        planet(0, { owner: "player" }),
+        planet(1, { x: 100, owner: "ai1", garrison: 10, spec: "defence" }),
+      ],
+      [{ id: 0, owner: "player", ships, originId: 0, destId: 1, progress: 0.999 }]
+    );
+
+  const hold = mk(19); // 19 < (10 + prod)×2 — would flip a standard planet
+  tick(hold, TICK_DT);
+  assert(hold.planets[1]!.owner === "ai1", "defence spec held off 19 attackers");
+  closeTo(
+    hold.planets[1]!.garrison,
+    10 + PRODUCTION.medium * TICK_DT - 19 / 2,
+    "failed attack kills ships/defendMult defenders"
+  );
+
+  const flip = mk(21); // 21 > (10 + prod)×2
+  tick(flip, TICK_DT);
+  assert(flip.planets[1]!.owner === "player", "overwhelming force flips a defence planet");
+  closeTo(
+    flip.planets[1]!.garrison,
+    21 - (10 + PRODUCTION.medium * TICK_DT) * 2,
+    "flip pays garrison × defendMult"
+  );
+  assert(flip.planets[1]!.spec === "standard", "capture clears specialisation");
+}
+
+// 1i. Naval spec: ×1.5 production, but defends at ×0.75 (glass shipyard).
+{
+  const s = mkState([planet(0, { owner: "player", spec: "naval" })]);
+  tick(s, 1);
+  closeTo(s.planets[0]!.garrison, PRODUCTION.medium * 1.5, "naval production ×1.5");
+
+  const s2 = mkState(
+    [
+      planet(0, { owner: "player" }),
+      planet(1, { x: 100, owner: "ai1", garrison: 10, spec: "naval" }),
+    ],
+    [{ id: 0, owner: "player", ships: 9, originId: 0, destId: 1, progress: 0.999 }]
+  );
+  tick(s2, TICK_DT);
+  assert(s2.planets[1]!.owner === "player", "glass shipyard fell below its raw garrison");
+  closeTo(
+    s2.planets[1]!.garrison,
+    9 - (10 + PRODUCTION.medium * 1.5 * TICK_DT) * 0.75,
+    "naval flip pays garrison × 0.75"
+  );
+}
+
+// 1j. Economy spec: own production ×0.5, +15% empire-wide per economy planet
+// (additive), enemies unaffected, converting economy planets don't count.
+{
+  const s = mkState([
+    planet(0, { owner: "player", spec: "economy" }),
+    planet(1, { owner: "player", x: 300 }),
+    planet(2, { owner: "ai1", x: 600 }),
+  ]);
+  tick(s, 1);
+  closeTo(s.planets[0]!.garrison, PRODUCTION.medium * 0.5 * 1.15, "economy own production ×0.5×1.15");
+  closeTo(s.planets[1]!.garrison, PRODUCTION.medium * 1.15, "friendly planet gets +15%");
+  closeTo(s.planets[2]!.garrison, PRODUCTION.medium, "enemy production unaffected");
+
+  const s2 = mkState([
+    planet(0, { owner: "player", spec: "economy" }),
+    planet(1, { owner: "player", spec: "economy", x: 300 }),
+    planet(2, { owner: "player", x: 600 }),
+    planet(3, { owner: "player", spec: "economy", nextSpec: "standard", convertTicks: 60, x: 900 }),
+  ]);
+  tick(s2, 1);
+  closeTo(s2.planets[2]!.garrison, PRODUCTION.medium * 1.3, "two economy planets stack to +30%");
+}
+
+// 1k. A converting planet defends without spec bonuses, and capture
+// mid-conversion resets spec, pending spec, and timer.
+{
+  const target = planet(1, { x: 100, owner: "ai1", garrison: 10, spec: "defence" });
+  target.nextSpec = "economy";
+  target.convertTicks = 300;
+  const s = mkState(
+    [planet(0, { owner: "player" }), target],
+    [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 1, progress: 0.999 }]
+  );
+  tick(s, TICK_DT);
+  assert(s.planets[1]!.owner === "player", "converting defence planet fell at ×1");
+  closeTo(s.planets[1]!.garrison, 2, "no production while converting; 1:1 trade");
+  const q = s.planets[1]!;
+  assert(q.spec === "standard" && q.nextSpec === "standard" && q.convertTicks === 0,
+    "capture mid-conversion reset everything");
 }
 
 // 2. Fleet travel timing: full screen width (1000u) in 5s = 300 ticks at 60Hz.
