@@ -3,7 +3,9 @@
 // the sim ticks at exactly TICK_RATE via an accumulator, rendering
 // interpolates between the last two ticks.
 
-import { GameState, Command, TICK_DT, createGame, update } from "./sim";
+import { GameState, Command, TICK_DT, update } from "./sim";
+import { generateMap } from "./mapgen";
+import type { FactionCount } from "./config";
 import { createRenderer } from "./render";
 import { attachInput } from "./input";
 
@@ -46,6 +48,12 @@ function acceptanceState(): GameState {
 
 const scenario = new URLSearchParams(location.search).get("scenario");
 
+// ?factions=3 renders a rotated 3-faction map (the 3rd faction stays passive
+// until QUA-123 gives it an AI); anything else defaults to a 2-faction mirror.
+function factionsFromUrl(): FactionCount {
+  return new URLSearchParams(location.search).get("factions") === "3" ? 3 : 2;
+}
+
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const renderer = createRenderer(canvas);
 
@@ -57,7 +65,7 @@ function startGame(seed: number): void {
     state = acceptanceState();
   } else {
     writeSeedToUrl(seed);
-    state = createGame(seed);
+    state = generateMap(seed, factionsFromUrl());
   }
   prevState = JSON.parse(JSON.stringify(state)) as GameState;
 }
