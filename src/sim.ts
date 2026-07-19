@@ -14,8 +14,8 @@ import {
   AI_MIN_GARRISON,
   AI_DIST_DIVISOR,
 } from "./config";
-import { RngState, createRng, nextFloat } from "./rng";
-import { generatePlanets } from "./mapgen";
+import { RngState, nextFloat } from "./rng";
+import { generateMap } from "./mapgen";
 
 export type { Owner, Size };
 export { TICK_DT, TICK_RATE, WORLD_W, WORLD_H } from "./config";
@@ -66,17 +66,11 @@ export interface GameState {
   phase: Phase;
 }
 
+/** Standard skirmish start. Map generation (seeding, layout, fairness) lives
+ * in mapgen.ts; this is a thin wrapper so callers get a 2-faction game from a
+ * seed. Use generateMap directly for other faction counts. */
 export function createGame(seed: number): GameState {
-  const rng = createRng(seed);
-  return {
-    tick: 0,
-    seed: seed >>> 0,
-    rng,
-    planets: generatePlanets(rng),
-    fleets: [],
-    nextFleetId: 0,
-    phase: "playing",
-  };
+  return generateMap(seed, 2);
 }
 
 function dist(ax: number, ay: number, bx: number, by: number): number {
