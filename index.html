@@ -157,6 +157,69 @@
       border-radius: 12px;
     }
 
+    /* --- QUA-131 in-game HUD: send-fraction chip, spec button, type picker --- */
+    #fracChip {
+      position: fixed;
+      left: 50%;
+      transform: translateX(-50%);
+      bottom: calc(var(--sai-bottom) + 14px);
+      z-index: 5;
+      min-width: 76px;
+      min-height: 48px;
+      font-size: 17px;
+      font-weight: bold;
+      color: var(--accent);
+      background: rgba(20, 26, 48, 0.85);
+      border: 1px solid var(--accent);
+      border-radius: 24px;
+    }
+    #specBtn {
+      position: fixed;
+      z-index: 5;
+      width: 44px;
+      height: 44px;
+      font-size: 20px;
+      color: var(--text);
+      background: rgba(20, 26, 48, 0.85);
+      border: 1px solid var(--panel-line);
+      border-radius: 22px;
+      padding: 0;
+    }
+    #specPicker {
+      position: fixed;
+      z-index: 6;
+      background: var(--panel);
+      border: 1px solid var(--panel-line);
+      border-radius: 14px;
+      padding: 8px;
+    }
+    #specPickerCost {
+      font-size: 12px;
+      color: var(--dim);
+      text-align: center;
+      margin-bottom: 6px;
+    }
+    #specPickerRow {
+      display: flex;
+      gap: 6px;
+    }
+    #specPickerRow button {
+      min-width: 52px;
+      min-height: 52px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      font-size: 12px;
+      color: var(--text);
+      background: #0e1326;
+      border: 1px solid var(--panel-line);
+      border-radius: 12px;
+    }
+    #specPickerRow button .glyph { font-size: 16px; }
+    #specPickerRow button:disabled { opacity: 0.4; }
+
     #pauseOverlay .panel { text-align: center; }
     #endTitle.victory { color: var(--accent); }
     #endTitle.defeat { color: #ff5d5d; }
@@ -175,6 +238,14 @@
   <canvas id="game"></canvas>
 
   <button id="pauseBtn" class="hidden" aria-label="Pause">&#10073;&#10073;</button>
+
+  <!-- QUA-131 in-game HUD: positioned/toggled by hud.ts every frame -->
+  <button id="fracChip" class="hidden" aria-label="Send amount"></button>
+  <button id="specBtn" class="hidden" aria-label="Specialise planet">&#9881;</button>
+  <div id="specPicker" class="hidden">
+    <div id="specPickerCost"></div>
+    <div id="specPickerRow"></div>
+  </div>
 
   <div id="setupOverlay" class="overlay hidden">
     <div class="panel">
