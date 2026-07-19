@@ -132,6 +132,37 @@ export interface AiTierConfig {
   combinesFleets: boolean;
   /** Prioritizes enemy planets that were just emptied by a big send. */
   countersEmptied: boolean;
+  // --- QUA-132: zone awareness, specialisation strategy, valuation ---
+  /** Reject any send whose predicted interception losses (predict.ts — the
+   * same estimator as the player preview) exceed this fraction of the fleet. */
+  maxAttritionFraction: number;
+  /** Stage too-hot attacks through a friendly/capturable hop that shortens
+   * the exposed final leg — hard's corridor game. */
+  stagesHops: boolean;
+  /** Converts planets (QUA-130): border → defence, interior → economy/naval. */
+  usesSpecs: boolean;
+  /** Re-converts planets whose desired spec changed as the border moved. */
+  reconsidersSpecs: boolean;
+  /** A planet is "border" when an enemy planet is among its k nearest. */
+  borderNeighbors: number;
+  /** Interior planets nearest the front to keep as Naval shipyards. */
+  navalCount: number;
+  /** Convert only when the garrison comfortably exceeds the 15-ship cost;
+   * below it, the candidate planet is "groomed" — spared as an attack source
+   * so it can bank production toward the conversion. */
+  convertGarrisonMin: number;
+  /** Specialisation also needs the empire's total planetside garrison at or
+   * above this (affordability) — together with not being behind on planet
+   * count (dominance), this keeps conversion taxes out of desperate fights. */
+  specsMinEmpireGarrison: number;
+  /** Target-score multiplier for enemy economy planets (<1 = juicier). */
+  economyScoreFactor: number;
+  /** Target-score multiplier for an L3 defence fortress when overwhelming
+   * force isn't available (>1 = near-untouchable). */
+  fortressScoreFactor: number;
+  /** Additive score per target development level above 1 — favours the
+   * low-level fringe of an enemy's territory over its developed core. */
+  levelWeight: number;
 }
 
 export const AI_TIERS: Record<AiTier, AiTierConfig> = {
@@ -147,6 +178,17 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     checksFeasibility: false,
     combinesFleets: false,
     countersEmptied: false,
+    maxAttritionFraction: 0.6, // will happily fly through moderate fire
+    stagesHops: false,
+    usesSpecs: false, // easy never converts
+    reconsidersSpecs: false,
+    borderNeighbors: 3,
+    navalCount: 0,
+    convertGarrisonMin: 20,
+    specsMinEmpireGarrison: 50,
+    economyScoreFactor: 1, // no spec/level awareness in easy's scoring
+    fortressScoreFactor: 1,
+    levelWeight: 0,
   },
   medium: {
     interval: { min: 2, max: 3 },
@@ -160,6 +202,17 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     checksFeasibility: true,
     combinesFleets: false,
     countersEmptied: false,
+    maxAttritionFraction: 0.4,
+    stagesHops: false, // medium re-targets rather than staging corridors
+    usesSpecs: true,
+    reconsidersSpecs: false,
+    borderNeighbors: 3,
+    navalCount: 1,
+    convertGarrisonMin: 20,
+    specsMinEmpireGarrison: 45,
+    economyScoreFactor: 0.7,
+    fortressScoreFactor: 4,
+    levelWeight: 3,
   },
   hard: {
     interval: { min: 1, max: 2 },
@@ -173,6 +226,17 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     checksFeasibility: true,
     combinesFleets: true,
     countersEmptied: true,
+    maxAttritionFraction: 0.25,
+    stagesHops: true, // captures stepping stones toward a target
+    usesSpecs: true,
+    reconsidersSpecs: true,
+    borderNeighbors: 3,
+    navalCount: 2,
+    convertGarrisonMin: 20,
+    specsMinEmpireGarrison: 40,
+    economyScoreFactor: 0.6,
+    fortressScoreFactor: 8,
+    levelWeight: 5,
   },
 };
 

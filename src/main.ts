@@ -65,7 +65,7 @@ function acceptanceState(): GameState {
     fleets: [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 2, progress: 0, damage: 0 }],
     nextFleetId: 1,
     phase: "playing",
-    ai: [{ owner: "ai1", tier: "medium", nextDecisionTick: 120 }],
+    ai: [{ owner: "ai1", tier: "medium", nextDecisionTick: 120, groomId: -1 }],
   };
 }
 

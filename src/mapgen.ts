@@ -350,7 +350,7 @@ export function generateMap(
       };
       for (let f = 1; f < factionCount; f++) {
         const tier = aiTiers[f - 1] ?? aiTiers[aiTiers.length - 1] ?? "medium";
-        const ai: AiState = { owner: FACTION_OWNERS[f]!, tier, nextDecisionTick: 0 };
+        const ai: AiState = { owner: FACTION_OWNERS[f]!, tier, nextDecisionTick: 0, groomId: -1 };
         ai.nextDecisionTick = nextDecisionDelay(state, tier);
         state.ai.push(ai);
       }
