@@ -14,6 +14,8 @@ import {
   DEVELOPMENT,
   GARRISON_CAP,
   SPECS,
+  INTERCEPT,
+  SIZE_RADIUS,
 } from "./config";
 import { RngState } from "./rng";
 import { generateMap } from "./mapgen";
@@ -55,6 +57,9 @@ export interface Fleet {
   /** 0..1 along the origin→destination center line. Position is derived, not
    * stored: origin/dest planets never move, so the lerp is exact. */
   progress: number;
+  /** Fractional interception damage accumulator (QUA-129): whole numbers are
+   * decremented from `ships` as they accrue, the remainder carries. */
+  damage: number;
 }
 
 export interface SendCommand {
@@ -124,6 +129,29 @@ export function defendMultiplier(p: Planet): number {
   return 1;
 }
 
+/** Interception zone radius in world units (QUA-129); 0 for neutrals. The
+ * defence spec widens it (offline while converting). */
+export function zoneRadius(p: Planet): number {
+  if (p.owner === NEUTRAL) return 0;
+  const specMult = p.spec === "defence" && p.convertTicks === 0 ? SPECS.defence.zoneRadiusMult : 1;
+  return SIZE_RADIUS[p.size] * INTERCEPT.zoneRadiusFactor * specMult;
+}
+
+/** Ships/sec a zone strips from an enemy fleet inside it: 5% of the displayed
+ * garrison count per second × level × defence-spec multiplier. Read live each
+ * tick — a garrison being whittled down intercepts ever more weakly, and an
+ * emptied one (garrison 0) inflicts nothing. */
+export function zoneDps(p: Planet): number {
+  if (p.owner === NEUTRAL) return 0;
+  const specMult = p.spec === "defence" && p.convertTicks === 0 ? SPECS.defence.zoneDamageMult : 1;
+  return (
+    INTERCEPT.damageRate *
+    Math.floor(p.garrison) *
+    DEVELOPMENT.interceptMult[planetLevel(p) - 1]! *
+    specMult
+  );
+}
+
 function dist(ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax;
   const dy = by - ay;
@@ -155,6 +183,7 @@ export function sendFleet(
     originId: fromPlanetId,
     destId: toPlanetId,
     progress: 0,
+    damage: 0,
   });
 }
 
@@ -214,11 +243,12 @@ function resolveArrival(planet: Planet, fleet: Fleet): void {
 }
 
 /** Advance the simulation by one step of `dt` seconds. Spec step order
- * (QUA-119, extended by QUA-128/130) — do not reorder:
+ * (QUA-119, extended by QUA-128/129/130) — do not reorder:
  *   1. production + development + conversion timers on owned planets
  *   2. advance fleet progress
- *   3. resolve arrivals, simultaneous arrivals in FLEET-ID order
- *   4. increment tick counter */
+ *   3. interception attrition on in-transit fleets; destroyed fleets despawn
+ *   4. resolve arrivals, simultaneous arrivals in FLEET-ID order
+ *   5. increment tick counter */
 export function tick(state: GameState, dt: number): GameState {
   // Empire-wide economy bonus (QUA-130): count each owner's completed economy
   // planets once, before the production loop — converting ones don't count.
@@ -260,6 +290,37 @@ export function tick(state: GameState, dt: number): GameState {
     const target = state.planets[f.destId]!;
     const d = dist(origin.x, origin.y, target.x, target.y);
     f.progress += (SHIP_SPEED * dt) / d;
+  }
+
+  // Interception (QUA-129): every hostile zone containing the fleet fires at
+  // once (overlaps stack). Fleets that reached progress 1 this tick are
+  // exempt — they land and fight at full strength. Fractional damage accrues
+  // per fleet; only whole ships are ever removed.
+  let anyDestroyed = false;
+  for (const f of state.fleets) {
+    if (f.progress >= 1) continue;
+    const origin = state.planets[f.originId]!;
+    const target = state.planets[f.destId]!;
+    const fx = origin.x + (target.x - origin.x) * f.progress;
+    const fy = origin.y + (target.y - origin.y) * f.progress;
+    let dps = 0;
+    for (const p of state.planets) {
+      if (p.owner === NEUTRAL || p.owner === f.owner) continue;
+      if (dist(p.x, p.y, fx, fy) <= zoneRadius(p)) dps += zoneDps(p);
+    }
+    if (dps > 0) {
+      f.damage += dps * dt;
+      const whole = Math.floor(f.damage);
+      if (whole > 0) {
+        f.ships -= whole;
+        f.damage -= whole;
+        if (f.ships <= 0) anyDestroyed = true;
+      }
+    }
+  }
+  if (anyDestroyed) {
+    // Ground to zero in transit: despawn without ever arriving.
+    state.fleets = state.fleets.filter((f) => f.ships > 0);
   }
 
   // Resolve in id order regardless of array order (ids are assigned in launch

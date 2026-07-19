@@ -32,9 +32,24 @@ export const NEUTRAL_GARRISON: Record<Size, { min: number; max: number }> = {
 /** Default fraction of garrison launched per send. */
 export const SEND_FRACTION = 0.5;
 
-/** Display/hit-test radius per size class. Rendering and input only — the
- * simulation itself never reads radii. */
+/** Visual/hit-test radius per size class. Also the basis of interception-zone
+ * radii (QUA-129: zone = visual radius × zoneRadiusFactor), so this constant
+ * is sim-affecting — change it and replays change. */
 export const SIZE_RADIUS: Record<Size, number> = { small: 32, medium: 44, large: 56 };
+
+// ---------------------------------------------------------------------------
+// Interception zones (QUA-129). Owned planets project a circular zone that
+// strips ships from enemy fleets flying through it, scaling with the live
+// garrison, development level, and defence spec. Neutrals project none.
+// ---------------------------------------------------------------------------
+
+export const INTERCEPT = {
+  /** Zone radius = SIZE_RADIUS[size] × this. */
+  zoneRadiusFactor: 2.5,
+  /** Ships/sec lost per (displayed) garrison ship — 5% of the garrison count
+   * per second, per the spec's worked example. */
+  damageRate: 0.05,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Planet development (QUA-128). Planets level up the longer one owner holds

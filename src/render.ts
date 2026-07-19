@@ -2,7 +2,17 @@
 // The world→screen transform lives here and input.ts uses screenToWorld so
 // there is exactly one mapping in the codebase.
 
-import { GameState, Fleet, Owner, Planet, WORLD_W, WORLD_H, planetLevel } from "./sim";
+import {
+  GameState,
+  Fleet,
+  Owner,
+  Planet,
+  WORLD_W,
+  WORLD_H,
+  planetLevel,
+  zoneRadius,
+  zoneDps,
+} from "./sim";
 import { SIZE_RADIUS, SPECS, TICK_RATE } from "./config";
 import type { InputView } from "./input";
 
@@ -37,6 +47,13 @@ const PIP_ANGLE_STEP = 0.24;
 const GLYPH = 5;
 /** Total conversion downtime in ticks, for the radial progress sweep. */
 const CONVERT_TICKS_TOTAL = Math.round(SPECS.convertTime * TICK_RATE);
+/** Interception-zone ring alpha (QUA-129): subtle at rest, hot while firing. */
+const ZONE_ALPHA_IDLE = 0.12;
+const ZONE_ALPHA_FIRING = 0.4;
+const TRACER_ALPHA = 0.55;
+/** In-transit fleet death effect duration and ring-buffer size. */
+const POOF_MS = 400;
+const POOF_SLOTS = 16;
 /** Minimum on-screen garrison font (css px) so counters stay legible on
  * phones, where the world scale can shrink text below readability. */
 const MIN_GARRISON_FONT = 14;
@@ -124,6 +141,75 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   // Reused across frames (no per-frame allocation in the draw loop).
   const prevFleetById = new Map<number, Fleet>();
 
+  // Interception visuals (QUA-129). `firing` marks planets whose zone holds a
+  // hostile fleet this frame (brightens the ring); recomputed per frame from
+  // interpolated fleet positions — a pure read, like every renderer diff.
+  let firing: boolean[] = [];
+  // Despawn poofs: fleets that vanished mid-flight (intercepted to zero).
+  // Fixed ring buffer, no per-frame allocation.
+  const poofX = new Float64Array(POOF_SLOTS);
+  const poofY = new Float64Array(POOF_SLOTS);
+  const poofAt = new Float64Array(POOF_SLOTS).fill(-1e9);
+  let poofNext = 0;
+  let lastPoofTick = -1;
+  const currFleetIds = new Set<number>();
+
+  /** Interpolated fleet position for this frame (matches drawFleets). */
+  function fleetFramePos(
+    curr: GameState,
+    f: Fleet,
+    alpha: number,
+    out: { x: number; y: number; p: number }
+  ): void {
+    const pf = prevFleetById.get(f.id);
+    const p = pf ? pf.progress + (f.progress - pf.progress) * alpha : f.progress;
+    const origin = curr.planets[f.originId]!;
+    const dest = curr.planets[f.destId]!;
+    out.x = origin.x + (dest.x - origin.x) * p;
+    out.y = origin.y + (dest.y - origin.y) * p;
+    out.p = p;
+  }
+  const scratchPos = { x: 0, y: 0, p: 0 };
+
+  /** Which zones are actively firing this frame (hostile fleet inside). */
+  function updateFiring(curr: GameState, alpha: number): void {
+    if (firing.length !== curr.planets.length) {
+      firing = new Array<boolean>(curr.planets.length);
+    }
+    firing.fill(false);
+    for (const f of curr.fleets) {
+      if (f.progress >= 1) continue;
+      fleetFramePos(curr, f, alpha, scratchPos);
+      for (const p of curr.planets) {
+        if (p.owner === "neutral" || p.owner === f.owner || firing[p.id]) continue;
+        if (zoneDps(p) <= 0) continue;
+        if (Math.hypot(p.x - scratchPos.x, p.y - scratchPos.y) <= zoneRadius(p)) {
+          firing[p.id] = true;
+        }
+      }
+    }
+  }
+
+  /** A fleet present last tick but gone now, short of arrival, was shot down
+   * in transit: remember where for the fade-out poof. Runs once per sim tick
+   * (prev/curr only change then), not per frame. */
+  function updatePoofs(prev: GameState, curr: GameState, now: number): void {
+    if (curr.tick < lastPoofTick) poofAt.fill(-1e9); // new game
+    if (curr.tick === lastPoofTick) return;
+    lastPoofTick = curr.tick;
+    currFleetIds.clear();
+    for (const f of curr.fleets) currFleetIds.add(f.id);
+    for (const f of prev.fleets) {
+      if (currFleetIds.has(f.id) || f.progress >= 0.98) continue;
+      const origin = prev.planets[f.originId]!;
+      const dest = prev.planets[f.destId]!;
+      poofX[poofNext] = origin.x + (dest.x - origin.x) * f.progress;
+      poofY[poofNext] = origin.y + (dest.y - origin.y) * f.progress;
+      poofAt[poofNext] = now;
+      poofNext = (poofNext + 1) % POOF_SLOTS;
+    }
+  }
+
   // Capture-flash bookkeeping. Purely renderer-local — the sim has no
   // "recently captured" state; we detect owner changes by remembering what we
   // drew last frame. Indexed by planet id (== array index, stable per game).
@@ -189,6 +275,61 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     g.strokeText(text, x, y);
     g.fillStyle = "#ffffff";
     g.fillText(text, x, y);
+  }
+
+  /** Interception-zone rings (QUA-129): always visible but subtle, in the
+   * owner colour; brightened while the zone is actively firing. Drawn under
+   * the planets. */
+  function drawZones(curr: GameState, scale: number): void {
+    for (const p of curr.planets) {
+      const zr = zoneRadius(p);
+      if (zr <= 0) continue;
+      g.globalAlpha = firing[p.id] ? ZONE_ALPHA_FIRING : ZONE_ALPHA_IDLE;
+      g.strokeStyle = OWNER_STROKE[p.owner];
+      g.lineWidth = 1.5 / scale;
+      g.beginPath();
+      g.arc(p.x, p.y, zr, 0, Math.PI * 2);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+  }
+
+  /** Tracer lines from each firing planet to the fleets it is hitting, so
+   * interception losses read on screen. Drawn over fleets. */
+  function drawTracers(curr: GameState, alpha: number, scale: number): void {
+    g.globalAlpha = TRACER_ALPHA;
+    g.lineWidth = 1.5 / scale;
+    for (const f of curr.fleets) {
+      if (f.progress >= 1) continue;
+      fleetFramePos(curr, f, alpha, scratchPos);
+      for (const p of curr.planets) {
+        if (p.owner === "neutral" || p.owner === f.owner) continue;
+        if (zoneDps(p) <= 0) continue;
+        if (Math.hypot(p.x - scratchPos.x, p.y - scratchPos.y) > zoneRadius(p)) continue;
+        g.strokeStyle = OWNER_STROKE[p.owner];
+        g.beginPath();
+        g.moveTo(p.x, p.y);
+        g.lineTo(scratchPos.x, scratchPos.y);
+        g.stroke();
+      }
+    }
+    g.globalAlpha = 1;
+  }
+
+  /** Fade-out rings where fleets were ground to zero in transit. */
+  function drawPoofs(now: number): void {
+    for (let i = 0; i < POOF_SLOTS; i++) {
+      const age = now - poofAt[i]!;
+      if (age >= POOF_MS) continue;
+      const t = age / POOF_MS;
+      g.globalAlpha = 1 - t;
+      g.strokeStyle = "#ffffff";
+      g.lineWidth = 2 * (1 - t);
+      g.beginPath();
+      g.arc(poofX[i]!, poofY[i]!, 4 + 18 * t, 0, Math.PI * 2);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
   }
 
   function drawPlanets(
@@ -344,15 +485,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     }
   }
 
-  function drawFleets(
-    prev: GameState,
-    curr: GameState,
-    alpha: number,
-    scale: number
-  ): void {
-    prevFleetById.clear();
-    for (const f of prev.fleets) prevFleetById.set(f.id, f);
-
+  function drawFleets(curr: GameState, alpha: number, scale: number): void {
     for (const f of curr.fleets) {
       // Interpolate progress between ticks, then derive the position from the
       // (static) origin/dest planet centers — exact, no positional drift.
@@ -392,7 +525,13 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     const cssH = canvas.height / dpr;
     const now = performance.now();
 
+    // prev-fleet index is shared by fleet interpolation, firing detection and
+    // poof detection — build it once per frame, before any of them.
+    prevFleetById.clear();
+    for (const f of prev.fleets) prevFleetById.set(f.id, f);
+
     updateCaptureFlashes(curr, now);
+    updatePoofs(prev, curr, now);
 
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = BG;
@@ -407,8 +546,12 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     g.lineWidth = 4;
     g.strokeRect(0, 0, WORLD_W, WORLD_H);
 
+    updateFiring(curr, alpha);
+    drawZones(curr, scale);
     drawPlanets(curr, view.selection, scale, now);
-    drawFleets(prev, curr, alpha, scale);
+    drawFleets(curr, alpha, scale);
+    drawTracers(curr, alpha, scale);
+    drawPoofs(now);
     drawGestures(curr, view, scale);
 
     // HUD in screen space, tucked inside the safe area

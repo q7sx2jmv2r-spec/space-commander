@@ -105,7 +105,7 @@ function mkAi(tier: AiTier): AiState {
       planet(0, { owner: "ai1", garrison: 5 }),
       planet(1, { owner: "ai1", garrison: 20, x: 300 }),
     ],
-    [{ id: 0, owner: "player", ships: 15, originId: 1, destId: 0, progress: 0.2 }]
+    [{ id: 0, owner: "player", ships: 15, originId: 1, destId: 0, progress: 0.2, damage: 0 }]
   );
   const cmds = aiDecide(s, mkAi("medium"));
   assert(cmds.length === 1, `expected exactly the reinforcement (got ${cmds.length})`);
@@ -120,7 +120,7 @@ function mkAi(tier: AiTier): AiState {
       planet(0, { owner: "ai1", garrison: 12 }),
       planet(1, { owner: "neutral", size: "small", garrison: 1, x: 300 }),
     ],
-    [{ id: 0, owner: "player", ships: 10, originId: 1, destId: 0, progress: 0.1 }]
+    [{ id: 0, owner: "player", ships: 10, originId: 1, destId: 0, progress: 0.1, damage: 0 }]
   );
   const cmds = aiDecide(s, mkAi("medium"));
   assert(cmds.length === 0, `medium abandoned its defense to attack (${JSON.stringify(cmds)})`);
