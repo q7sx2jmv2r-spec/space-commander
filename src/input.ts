@@ -34,19 +34,29 @@ export interface InputView {
 export interface InputState {
   view: InputView;
   pendingCommands: Command[];
+  /** Clear all gesture/selection state; called on every new game so nothing
+   * leaks between games (QUA-124). */
+  reset(): void;
 }
 
 type Mode = "idle" | "pressed" | "dragPlanet" | "dragBox";
 
 export function attachInput(
   canvas: HTMLCanvasElement,
-  getState: () => GameState,
-  onRestart: () => void
+  getState: () => GameState
 ): InputState {
   const selection = new Set<number>();
   const input: InputState = {
     view: { selection, drag: null },
     pendingCommands: [],
+    reset() {
+      selection.clear();
+      input.pendingCommands.length = 0;
+      lastTapAt = -Infinity;
+      lastTapPlanetId = -2;
+      lastSendSources = [];
+      resetGesture();
+    },
   };
 
   let mode: Mode = "idle";
@@ -133,10 +143,8 @@ export function attachInput(
   canvas.addEventListener("pointerdown", (e) => {
     if (mode !== "idle") return; // second finger: ignore, never reinterpret
     const state = getState();
-    if (state.phase !== "playing") {
-      onRestart();
-      return;
-    }
+    // Game over: the DOM end panel owns interaction now (QUA-124).
+    if (state.phase !== "playing") return;
 
     mode = "pressed";
     pointerId = e.pointerId;

@@ -8,11 +8,12 @@
     "build": "npm run typecheck && esbuild src/main.ts --bundle --minify --sourcemap --outfile=dist/main.js && node -e \"require('fs').copyFileSync('src/index.html','dist/index.html')\"",
     "serve": "node -e \"require('fs').mkdirSync('dist',{recursive:true});require('fs').copyFileSync('src/index.html','dist/index.html')\" && esbuild src/main.ts --bundle --sourcemap --outfile=dist/main.js --servedir=dist --serve=127.0.0.1:8000",
     "typecheck": "tsc --noEmit",
-    "test": "npm run test:determinism && npm run test:sim && npm run test:mapgen && npm run test:ai",
+    "test": "npm run test:determinism && npm run test:sim && npm run test:mapgen && npm run test:ai && npm run test:flow",
     "test:determinism": "esbuild src/test/determinism.ts --bundle --format=esm --outfile=.test-build/determinism.mjs && node .test-build/determinism.mjs",
     "test:sim": "esbuild src/test/sim.test.ts --bundle --format=esm --outfile=.test-build/sim.test.mjs && node .test-build/sim.test.mjs",
     "test:mapgen": "esbuild src/test/mapgen.test.ts --bundle --format=esm --outfile=.test-build/mapgen.test.mjs && node .test-build/mapgen.test.mjs",
-    "test:ai": "esbuild src/test/ai.test.ts --bundle --format=esm --outfile=.test-build/ai.test.mjs && node .test-build/ai.test.mjs"
+    "test:ai": "esbuild src/test/ai.test.ts --bundle --format=esm --outfile=.test-build/ai.test.mjs && node .test-build/ai.test.mjs",
+    "test:flow": "esbuild src/test/flow.test.ts --bundle --format=esm --outfile=.test-build/flow.test.mjs && node .test-build/flow.test.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
