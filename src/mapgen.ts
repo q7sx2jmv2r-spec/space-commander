@@ -36,7 +36,7 @@ import {
   MAX_MAP_ATTEMPTS,
 } from "./config";
 import { AiTier } from "./config";
-import { RngState, createRng, nextFloat, nextRange } from "./rng";
+import { RngState, createRng, mixSeed, nextFloat, nextRange } from "./rng";
 import { AiState, nextDecisionDelay } from "./ai";
 import type { GameState, Planet } from "./sim";
 
@@ -47,14 +47,6 @@ const CY = WORLD_H / 2;
  * reach; ai2 only appears in 3-faction maps (its render colour already
  * exists — it stays passive until QUA-123 gives it an AI). */
 const FACTION_OWNERS: Owner[] = ["player", "ai1", "ai2"];
-
-/** Deterministic sub-seed for retry N, so each attempt explores a different
- * map while staying a pure function of the original seed. */
-function mixSeed(seed: number, attempt: number): number {
-  let h = (seed ^ Math.imul(attempt + 0x9e3779b9, 0x85ebca6b)) >>> 0;
-  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
-  return (h ^ (h >>> 16)) >>> 0;
-}
 
 function dist2(ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax;
@@ -344,6 +336,7 @@ export function generateMap(
         rng: createRng(mixSeed(s, 0xa5a5a5)),
         planets,
         fleets: [],
+        battles: [],
         nextFleetId: 0,
         phase: "playing",
         ai: [],

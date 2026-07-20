@@ -63,6 +63,7 @@ function acceptanceState(): GameState {
       { id: 2, x: 730, y: 1140, size: "small", owner: "neutral", garrison: 8, heldTicks: 0, spec: "standard", nextSpec: "standard", convertTicks: 0 },
     ],
     fleets: [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 2, progress: 0, damage: 0 }],
+    battles: [],
     nextFleetId: 1,
     phase: "playing",
     ai: [{ owner: "ai1", tier: "medium", nextDecisionTick: 120, groomId: -1 }],
@@ -85,6 +86,9 @@ function endScenario(win: boolean): GameState {
         ? { id: 0, owner: "player", ships: 40, originId: 0, destId: 1, progress: 0.94, damage: 0 }
         : { id: 0, owner: "ai1", ships: 40, originId: 1, destId: 0, progress: 0.94, damage: 0 },
     ],
+    // The 40-ship arrival now fights a short battle before the end screen —
+    // still deterministic, just ~1s later.
+    battles: [],
     nextFleetId: 1,
     phase: "playing",
     ai: [],

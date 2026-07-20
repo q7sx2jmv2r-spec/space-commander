@@ -20,6 +20,7 @@ function mkState(planets: Planet[], fleets: Fleet[] = [], ai: AiState[] = []): G
     rng: { s: 1 },
     planets,
     fleets,
+    battles: [],
     nextFleetId: maxFleetId + 1,
     phase: "playing",
     ai,
@@ -204,7 +205,7 @@ const sends = (cmds: readonly ReturnType<typeof aiDecide>[number][]): SendComman
       planet(0, { x: 0, y: 800, owner: "ai1", garrison: 19 }),
       planet(1, { x: 200, y: 800, owner: "ai1", garrison: 19 }),
       planet(2, { x: 400, y: 800, owner: "ai1", garrison: 19 }),
-      planet(3, { x: 600, y: 800, owner: "ai1", garrison: 30 }),
+      planet(3, { x: 600, y: 800, owner: "ai1", garrison: 45 }),
       planet(4, { x: 900, y: 800, owner: "player", garrison: 10 }),
     ]);
 
@@ -245,12 +246,15 @@ const sends = (cmds: readonly ReturnType<typeof aiDecide>[number][]): SendComman
     `hard should hit the economy planet first (${JSON.stringify(ecoSends)})`
   );
 
-  const fortress = planet(1, { x: 300, y: 0, owner: "player", garrison: 5, spec: "defence" });
+  // Fortress garrison 8 defends at ×3.6 (battle rework: bonus × L3 × spec) —
+  // well beyond an 18-ship send — while the soft garrison-8 target is a clear
+  // win for the same force.
+  const fortress = planet(1, { x: 300, y: 0, owner: "player", garrison: 8, spec: "defence" });
   fortress.heldTicks = DEVELOPMENT.levelTimes[2] * TICK_RATE; // L3
   const fort = mkState([
     planet(0, { x: 0, y: 0, owner: "ai1", garrison: 30 }),
     fortress,
-    planet(2, { x: 500, y: 0, owner: "player", garrison: 12 }),
+    planet(2, { x: 500, y: 0, owner: "player", garrison: 8 }),
   ]);
   const fortSends = sends(aiDecide(fort, mkAi("hard")));
   assert(

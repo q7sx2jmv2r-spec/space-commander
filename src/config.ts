@@ -69,6 +69,11 @@ export const DEVELOPMENT = {
   capMult: [1, 1.5, 2],
   /** Interception-zone damage scaling per level (consumed by QUA-129). */
   interceptMult: [1, 1.5, 2],
+  /** Battle defender-strength scaling per level. Gentler than the other level
+   * arrays because it multiplies into an already-stacked product
+   * (× BATTLE.defenderBonus × the spec's defendMult): L3 defence would be
+   * ×4.8 per ship at [1,1.5,2] — near-untouchable — vs ×3.6 here. */
+  defendMult: [1, 1.25, 1.5],
 } as const;
 
 /** Base (L1) garrison cap per size — a SOFT cap: production halts at the cap,
@@ -98,6 +103,31 @@ export const SPECS = {
   /** Own production halves, but every economy planet adds +15% empire-wide
    * production (additive stacking). The greedy option you must protect. */
   economy: { productionMult: 0.5, empireBonus: 0.15 },
+} as const;
+
+// ---------------------------------------------------------------------------
+// Ticked battles. Combat at a planet is a short fight over many ticks, not an
+// instant trade: per tick each side inflicts
+//   strength^exponent × rate × roll(rollMin–rollMax)  casualties/sec × dt,
+// where defender strength = floor(garrison) × defenderBonus ×
+// DEVELOPMENT.defendMult[level-1] × the spec's defendMult, and attacker
+// strength is the raw pool size. The superlinear exponent makes lopsided
+// attacks cheap and marginal attacks ruinous — the anti-snipe lever. If
+// planets still revolve in playtests, raise exponent toward 1.3 or
+// defenderBonus toward 1.3 before touching anything else.
+// ---------------------------------------------------------------------------
+
+export const BATTLE = {
+  /** Superlinear strength exponent. */
+  exponent: 1.2,
+  /** Structural defender advantage: each garrison ship fights at this. */
+  defenderBonus: 1.2,
+  /** Casualties/sec per strength^exponent unit. 0.35 puts decisive fights at
+   * ~60–120 ticks (30v20 ≈ 74) and near-ties at ~150–280. */
+  rate: 0.35,
+  /** Per-side per-tick roll bounds (seeded, keyed by tick + planet id). */
+  rollMin: 0.9,
+  rollMax: 1.1,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -190,14 +220,19 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     fortressScoreFactor: 1,
     levelWeight: 0,
   },
+  // Ticked battles retuned medium/hard (matchup-swept): the strength exponent
+  // makes many thin sends self-destructive and rewards fewer, fatter punches,
+  // so both tiers dropped to one larger send per decision; the conversion
+  // gates rose because spec taxes paid mid-war bleed an empire that now needs
+  // decisive force concentrations.
   medium: {
     interval: { min: 2, max: 3 },
-    attackFraction: 0.5,
+    attackFraction: 0.6,
     reinforceFraction: 0.3,
     reserveFraction: 0.15,
     garrisonWeight: 1,
     distanceWeight: 1 / 100, // garrison/distance flavour: cheap AND close
-    maxSendsPerDecision: 2,
+    maxSendsPerDecision: 1,
     reinforces: true,
     checksFeasibility: true,
     combinesFleets: false,
@@ -208,20 +243,20 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     reconsidersSpecs: false,
     borderNeighbors: 3,
     navalCount: 1,
-    convertGarrisonMin: 20,
-    specsMinEmpireGarrison: 45,
+    convertGarrisonMin: 35,
+    specsMinEmpireGarrison: 80,
     economyScoreFactor: 0.7,
     fortressScoreFactor: 4,
     levelWeight: 3,
   },
   hard: {
     interval: { min: 1, max: 2 },
-    attackFraction: 0.6,
+    attackFraction: 0.7,
     reinforceFraction: 0.35,
     reserveFraction: 0.1,
     garrisonWeight: 1,
     distanceWeight: 1 / 100,
-    maxSendsPerDecision: 3,
+    maxSendsPerDecision: 1,
     reinforces: true,
     checksFeasibility: true,
     combinesFleets: true,
@@ -232,8 +267,8 @@ export const AI_TIERS: Record<AiTier, AiTierConfig> = {
     reconsidersSpecs: true,
     borderNeighbors: 3,
     navalCount: 2,
-    convertGarrisonMin: 20,
-    specsMinEmpireGarrison: 40,
+    convertGarrisonMin: 35,
+    specsMinEmpireGarrison: 80,
     economyScoreFactor: 0.6,
     fortressScoreFactor: 8,
     levelWeight: 5,

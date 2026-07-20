@@ -20,10 +20,12 @@ import {
   applyCommand,
   sendFleet,
   tick,
+  update,
   planetLevel,
   garrisonCap,
+  defenderStrengthMult,
 } from "../sim";
-import { predictRoute } from "../predict";
+import { predictBattle, predictRoute } from "../predict";
 
 function assert(cond: boolean, msg: string): void {
   if (!cond) throw new Error(`sim test FAILED: ${msg}`);
@@ -42,6 +44,7 @@ function mkState(planets: Planet[], fleets: Fleet[] = []): GameState {
     rng: { s: 0 },
     planets,
     fleets,
+    battles: [],
     nextFleetId: maxFleetId + 1,
     phase: "playing",
     ai: [],
@@ -62,6 +65,18 @@ function planet(id: number, opts: Partial<Planet>): Planet {
     convertTicks: 0,
     ...opts,
   };
+}
+
+/** Tick until every battle has resolved (combat is no longer instant): lands
+ * any due arrivals, then grinds the fight to completion. Returns ticks run. */
+function fight(s: GameState, max = 2000): number {
+  let t = 0;
+  do {
+    tick(s, TICK_DT);
+    t += 1;
+  } while (s.battles.length > 0 && t < max);
+  assert(t < max, `battle failed to terminate within ${max} ticks`);
+  return t;
 }
 
 // 1. Production accrual: per-size rates; neutrals produce nothing.
@@ -160,14 +175,16 @@ function planet(id: number, opts: Partial<Planet>): Planet {
 }
 
 // 1e. Capture resets development: the flipped planet drops to heldTicks 0/L1.
+// (L3 also defends at ×1.5 via DEVELOPMENT.defendMult, so the assault must be
+// decisive: 20 v 5 effective 5×1.2×1.5 = 9.)
 {
   const target = planet(1, { x: 100, owner: "ai1", garrison: 5 });
   target.heldTicks = DEVELOPMENT.levelTimes[2] * TICK_RATE; // an L3 planet
   const s = mkState(
     [planet(0, { owner: "player" }), target],
-    [{ id: 0, owner: "player", ships: 8, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+    [{ id: 0, owner: "player", ships: 20, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
   );
-  tick(s, TICK_DT);
+  fight(s);
   assert(s.planets[1]!.owner === "player", "planet flipped");
   assert(s.planets[1]!.heldTicks === 0, "capture reset heldTicks");
   assert(planetLevel(s.planets[1]!) === 1, "captured L3 planet resets to L1");
@@ -209,36 +226,32 @@ function planet(id: number, opts: Partial<Planet>): Planet {
   closeTo(s.planets[2]!.garrison, 20, "same-spec convert deducted nothing");
 }
 
-// 1h. Defence spec: garrison fights at ×2 — an attack that would flip a
-// standard planet fails (killing ships/mult defenders), and a flip pays the
-// full multiplied price. Capture clears the spec.
+// 1h. Defence spec: the garrison's battle strength doubles (×1.2 bonus × 2
+// spec = 2.4/ship). Strength multiplies damage OUTPUT, not hit points, so the
+// force a garrison of G at multiplier m repels scales as G × m^(1.2/2.2):
+// standard 10 falls to ~11+, defence 10 repels up to ~16. A force that cracks
+// the standard planet bounces off the defence one; only overwhelming force
+// flips it. Capture clears the spec.
 {
-  const mk = (ships: number) =>
+  const mk = (ships: number, spec: "standard" | "defence") =>
     mkState(
-      [
-        planet(0, { owner: "player" }),
-        planet(1, { x: 100, owner: "ai1", garrison: 10, spec: "defence" }),
-      ],
+      [planet(0, { owner: "player" }), planet(1, { x: 100, owner: "ai1", garrison: 10, spec })],
       [{ id: 0, owner: "player", ships, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
     );
 
-  const hold = mk(19); // 19 < (10 + prod)×2 — would flip a standard planet
-  tick(hold, TICK_DT);
-  assert(hold.planets[1]!.owner === "ai1", "defence spec held off 19 attackers");
-  closeTo(
-    hold.planets[1]!.garrison,
-    10 + PRODUCTION.medium * TICK_DT - 19 / 2,
-    "failed attack kills ships/defendMult defenders"
-  );
+  const std = mk(14, "standard"); // 14 > ~11: cracks it
+  fight(std);
+  assert(std.planets[1]!.owner === "player", "14 attackers flip a standard planet");
 
-  const flip = mk(21); // 21 > (10 + prod)×2
-  tick(flip, TICK_DT);
+  const hold = mk(14, "defence"); // 14 < ~16: repelled
+  fight(hold);
+  assert(hold.planets[1]!.owner === "ai1", "defence spec held off 14 attackers");
+  assert(hold.planets[1]!.garrison > 0, "the defenders survive the failed attack");
+
+  const flip = mk(45, "defence");
+  fight(flip);
   assert(flip.planets[1]!.owner === "player", "overwhelming force flips a defence planet");
-  closeTo(
-    flip.planets[1]!.garrison,
-    21 - (10 + PRODUCTION.medium * TICK_DT) * 2,
-    "flip pays garrison × defendMult"
-  );
+  assert(flip.planets[1]!.garrison > 0, "capture leaves surviving attackers as garrison");
   assert(flip.planets[1]!.spec === "standard", "capture clears specialisation");
 }
 
@@ -248,20 +261,20 @@ function planet(id: number, opts: Partial<Planet>): Planet {
   tick(s, 1);
   closeTo(s.planets[0]!.garrison, PRODUCTION.medium * 1.5, "naval production ×1.5");
 
-  const s2 = mkState(
-    [
-      planet(0, { owner: "player" }),
-      planet(1, { x: 100, owner: "ai1", garrison: 10, spec: "naval" }),
-    ],
-    [{ id: 0, owner: "player", ships: 9, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
-  );
-  tick(s2, TICK_DT);
-  assert(s2.planets[1]!.owner === "player", "glass shipyard fell below its raw garrison");
-  closeTo(
-    s2.planets[1]!.garrison,
-    9 - (10 + PRODUCTION.medium * 1.5 * TICK_DT) * 0.75,
-    "naval flip pays garrison × 0.75"
-  );
+  // Glass jaw: naval defends at ×0.9/ship (1.2 × 0.75) vs ×1.2 standard —
+  // the repel threshold drops below the raw garrison. The same 10-ship force
+  // that loses to a standard garrison of 10 cracks the shipyard.
+  const mkAttack = (spec: "standard" | "naval") =>
+    mkState(
+      [planet(0, { owner: "player" }), planet(1, { x: 100, owner: "ai1", garrison: 10, spec })],
+      [{ id: 0, owner: "player", ships: 10, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+    );
+  const vsStandard = mkAttack("standard");
+  fight(vsStandard);
+  assert(vsStandard.planets[1]!.owner === "ai1", "10 attackers lose to a standard garrison of 10");
+  const vsNaval = mkAttack("naval");
+  fight(vsNaval);
+  assert(vsNaval.planets[1]!.owner === "player", "glass shipyard fell to the same force");
 }
 
 // 1j. Economy spec: own production ×0.5, +15% empire-wide per economy planet
@@ -287,22 +300,29 @@ function planet(id: number, opts: Partial<Planet>): Planet {
   closeTo(s2.planets[2]!.garrison, PRODUCTION.medium * 1.3, "two economy planets stack to +30%");
 }
 
-// 1k. A converting planet defends without spec bonuses, and capture
-// mid-conversion resets spec, pending spec, and timer.
+// 1k. A converting planet defends without spec bonuses (battle strength drops
+// to garrison × 1.2 × level), and capture mid-conversion resets spec, pending
+// spec, and timer. The same force loses to the spec once it's active.
 {
-  const target = planet(1, { x: 100, owner: "ai1", garrison: 10, spec: "defence" });
-  target.nextSpec = "economy";
-  target.convertTicks = 300;
-  const s = mkState(
-    [planet(0, { owner: "player" }), target],
-    [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
-  );
-  tick(s, TICK_DT);
-  assert(s.planets[1]!.owner === "player", "converting defence planet fell at ×1");
-  closeTo(s.planets[1]!.garrison, 2, "no production while converting; 1:1 trade");
-  const q = s.planets[1]!;
+  const mk = (convertTicks: number) => {
+    const target = planet(1, { x: 100, owner: "ai1", garrison: 10, spec: "defence" });
+    target.nextSpec = "economy";
+    target.convertTicks = convertTicks;
+    return mkState(
+      [planet(0, { owner: "player" }), target],
+      [{ id: 0, owner: "player", ships: 15, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+    );
+  };
+  const converting = mk(600); // long enough that the timer outlasts the fight
+  fight(converting);
+  const q = converting.planets[1]!;
+  assert(q.owner === "player", "converting defence planet fell without its ×2");
   assert(q.spec === "standard" && q.nextSpec === "standard" && q.convertTicks === 0,
     "capture mid-conversion reset everything");
+
+  const active = mk(0); // spec online: repel threshold rises to ~16 > 15
+  fight(active);
+  assert(active.planets[1]!.owner === "ai1", "the same force loses once the spec is active");
 }
 
 // 1l. Interception (QUA-129), exact chord case: a fleet crossing a hostile
@@ -460,45 +480,54 @@ function planet(id: number, opts: Partial<Planet>): Planet {
   assert(s.fleets.length === 0, "fleet arrived by tick 302 (nominal 300 = 5.0s)");
 }
 
-// 3. Capture flip: arriving ships > garrison flips with the surplus.
+// 3. Capture: a decisive assault wins the battle, flips the planet, and the
+// surviving attackers become the new garrison. The arriving fleet is consumed
+// into the battle immediately (no lingering fleet object).
 {
   const s = mkState(
     [planet(0, { owner: "player" }), planet(1, { x: 100, garrison: 5 })],
-    [{ id: 0, owner: "player", ships: 8, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+    [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
   );
   tick(s, TICK_DT);
-  assert(s.planets[1]!.owner === "player", "planet flipped to attacker");
-  closeTo(s.planets[1]!.garrison, 3, "surplus became the new garrison");
   assert(s.fleets.length === 0, "arrived fleet removed");
+  assert(s.battles.length === 1, "hostile arrival opened a battle, not an instant flip");
+  assert(s.planets[1]!.owner === "neutral", "no instant capture");
+  fight(s);
+  assert(s.planets[1]!.owner === "player", "planet flipped to attacker");
+  const survivors = Math.floor(s.planets[1]!.garrison);
+  assert(survivors >= 1 && survivors < 12, "survivors became the new garrison");
 }
 
-// 4. Failed attack: fewer ships reduce the garrison, ownership unchanged.
-// Defender produces during the arrival tick (production is step 1, arrivals
-// step 3), so the expected value includes one tick of medium production.
+// 4. Failed attack: a too-small force is ground down by the garrison (worth
+// ×1.2 each), ownership unchanged; the fight cost the defender some ships.
 {
   const s = mkState(
     [planet(0, { owner: "player" }), planet(1, { x: 100, owner: "ai1", garrison: 10 })],
     [{ id: 0, owner: "player", ships: 6, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
   );
-  tick(s, TICK_DT);
+  fight(s);
   assert(s.planets[1]!.owner === "ai1", "failed attack did not flip ownership");
-  closeTo(
-    s.planets[1]!.garrison,
-    10 + PRODUCTION.medium * TICK_DT - 6,
-    "garrison reduced 1:1 after production"
-  );
+  const left = s.planets[1]!.garrison;
+  assert(left > 0 && left < 10, `defenders paid for the win, hold survivors (got ${left})`);
+  assert(s.battles.length === 0, "battle cleaned up after the attacker died");
 }
 
-// 4b. Exact tie: defender holds at 0, ownership unchanged (neutral defender
-// so no production muddies the equality).
+// 4b. Mutual destruction in one tick: both sides' casualties are computed
+// from start-of-tick strengths and both applied; the attacker is checked
+// first, so the defender holds at 0 with ownership unchanged (the successor
+// of the old exact-tie rule). Hand-built accumulators put both sides one
+// whole ship from death on the same tick.
 {
-  const s = mkState(
-    [planet(0, { owner: "player" }), planet(1, { x: 100, garrison: 10 })],
-    [{ id: 0, owner: "player", ships: 10, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
-  );
+  const s = mkState([planet(0, { garrison: 1 })]);
+  s.battles.push({
+    planetId: 0,
+    defenderDamage: 0.995,
+    attackers: [{ owner: "player", ships: 1, damage: 0.995 }],
+  });
   tick(s, TICK_DT);
-  assert(s.planets[1]!.owner === "neutral", "tie keeps defender ownership");
-  closeTo(s.planets[1]!.garrison, 0, "tie leaves garrison at 0");
+  assert(s.planets[0]!.owner === "neutral", "mutual destruction keeps defender ownership");
+  assert(Math.floor(s.planets[0]!.garrison) === 0, "defender holds at 0");
+  assert(s.battles.length === 0, "battle over");
 }
 
 // 5. Reinforcement: friendly arrival adds to the garrison.
@@ -517,9 +546,10 @@ function planet(id: number, opts: Partial<Planet>): Planet {
 }
 
 // 6. Simultaneous arrivals resolve in FLEET-ID order, not array order. The
-// fleets array is built in REVERSE id order; id order gives: player-6 flips
-// neutral-5 (garrison 1), then ai1-3 flips player-1 (final ai1, garrison 2).
-// Array-mutation order would end neutral/player instead — this pins the rule.
+// fleets array is built in REVERSE id order; id order means the player fleet
+// (lower id) opens the battle and holds the head-pool slot — the pairwise
+// rule says only attackers[0] trades with the defender — while the later ai1
+// arrival queues behind it. This pins pool-creation order.
 {
   const s = mkState(
     [
@@ -533,8 +563,11 @@ function planet(id: number, opts: Partial<Planet>): Planet {
     ]
   );
   tick(s, TICK_DT);
-  assert(s.planets[2]!.owner === "ai1", "id-order resolution: ai1 lands last and flips");
-  closeTo(s.planets[2]!.garrison, 2, "id-order resolution leaves garrison 2");
+  const b = s.battles[0]!;
+  assert(s.battles.length === 1, "both hostile arrivals share one battle");
+  assert(b.attackers.length === 2, "two pools, one per faction");
+  assert(b.attackers[0]!.owner === "player", "lower fleet id opened the battle: head pool");
+  assert(b.attackers[1]!.owner === "ai1", "higher fleet id queued second");
 }
 
 // 7. Serialization round-trip: JSON clone mid-flight must not change the
@@ -583,14 +616,244 @@ function planet(id: number, opts: Partial<Planet>): Planet {
 }
 
 // ---------------------------------------------------------------------------
-// Acceptance scenario (QUA-119 "done when"): 3 planets, 2 owners, 1 fleet in
-// transit; tick 100 times; production accumulates, the fleet arrives, the
-// planet captures, and a new fleet spawns — all per spec numbers.
+// 9. Ticked battles (combat rework acceptance).
+// ---------------------------------------------------------------------------
+
+/** 1v1 duel: `att` player ships land on an ai1 medium holding `def`. */
+function duel(att: number, def: number, seed: number) {
+  const s = mkState(
+    [planet(0, { owner: "player" }), planet(1, { x: 100, owner: "ai1", garrison: def })],
+    [{ id: 0, owner: "player", ships: att, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+  );
+  s.seed = seed;
+  const ticks = fight(s);
+  return { s, ticks, won: s.planets[1]!.owner === "player", left: Math.floor(s.planets[1]!.garrison) };
+}
+
+// 9a. The anti-snipe core: 21 v 20 loses across seeds (the ×1.2 defender
+// bonus + superlinear exponent kill the free 21-beats-20 snipe), while 30 v 20
+// reliably wins with meaningful survivors in a ~1–2s battle.
+{
+  for (const seed of [1, 7, 42, 1234, 987654, 0x5eed]) {
+    const r = duel(21, 20, seed);
+    assert(!r.won, `21 v 20: defender holds (seed ${seed})`);
+    assert(r.s.battles.length === 0, "battle fully resolved");
+  }
+  for (const seed of [1, 7, 42, 1234]) {
+    const r = duel(30, 20, seed);
+    assert(r.won, `30 v 20: attacker wins (seed ${seed})`);
+    assert(r.left >= 15, `30 v 20 keeps meaningful survivors (got ${r.left}, seed ${seed})`);
+    assert(r.ticks >= 50 && r.ticks <= 130, `30 v 20 lasts ~1-2s (got ${r.ticks} ticks)`);
+  }
+}
+
+// 9b. Determinism: same seed → bit-identical outcome; and battle rolls are
+// keyed by (seed, tick, planet), so the shared state.rng stream is neither
+// consumed nor consulted — perturbing it must change nothing.
+{
+  const a = duel(22, 20, 42); // 22 v 20 is the variance knife edge — ideal here
+  const b = duel(22, 20, 42);
+  assert(JSON.stringify(a.s) === JSON.stringify(b.s), "same seed → identical battle outcome");
+
+  const c = mkState(
+    [planet(0, { owner: "player" }), planet(1, { x: 100, owner: "ai1", garrison: 20 })],
+    [{ id: 0, owner: "player", ships: 22, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+  );
+  c.seed = 42;
+  c.rng.s = 0xdeadbeef; // a perturbed shared stream must not affect battles
+  fight(c);
+  assert(
+    JSON.stringify(c.planets) === JSON.stringify(a.s.planets),
+    "battle outcome independent of the shared rng stream"
+  );
+}
+
+// 9c. Mid-battle serialization: a JSON snapshot taken during a fight resumes
+// bit-identically (battle state is plain data; rolls are pure functions of
+// seed/tick/planet).
+{
+  const s = mkState(
+    [planet(0, { owner: "player" }), planet(1, { x: 100, owner: "ai1", garrison: 20 })],
+    [{ id: 0, owner: "player", ships: 30, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+  );
+  s.seed = 7;
+  for (let t = 0; t < 30; t++) tick(s, TICK_DT); // well inside the battle
+  assert(s.battles.length === 1, "battle in progress at the snapshot point");
+  const clone = JSON.parse(JSON.stringify(s)) as GameState;
+  for (let t = 0; t < 200; t++) {
+    tick(s, TICK_DT);
+    tick(clone, TICK_DT);
+  }
+  assert(JSON.stringify(s) === JSON.stringify(clone), "mid-battle snapshot resumes identically");
+}
+
+// 9d. Reinforcement mid-battle, defender side: 30 v 20 flips the planet when
+// unaided (9a), but 15 defenders landing ~30 ticks in turn the tide. The
+// friendly arrival joins the garrison (no new pool).
+{
+  const s = mkState(
+    [
+      planet(0, { owner: "player" }),
+      planet(1, { x: 1000, owner: "ai1", garrison: 20 }),
+      planet(2, { x: 900, owner: "ai1", garrison: 0 }),
+    ],
+    [
+      { id: 0, owner: "player", ships: 30, originId: 0, destId: 1, progress: 0.999, damage: 0 },
+      // 100u from p2 to p1 at 200u/s = 30 ticks out.
+      { id: 1, owner: "ai1", ships: 15, originId: 2, destId: 1, progress: 0, damage: 0 },
+    ]
+  );
+  const relieved = fight(s);
+  assert(relieved > 30, "the fight outlasted the relief fleet's approach");
+  assert(s.planets[1]!.owner === "ai1", "mid-battle defender reinforcement saved the planet");
+  assert(s.battles.length === 0, "battle resolved");
+}
+
+// 9e. Reinforcement mid-battle, attacker side: 21 v 20 dies alone (9a), but a
+// second 10-ship wave landing ~30 ticks in joins the existing pool (same
+// owner → merge, still one pool) and takes the planet.
+{
+  const s = mkState(
+    [
+      planet(0, { owner: "player" }),
+      planet(1, { x: 1000, owner: "ai1", garrison: 20 }),
+      planet(2, { x: 900, owner: "player", garrison: 0 }),
+    ],
+    [
+      { id: 0, owner: "player", ships: 21, originId: 0, destId: 1, progress: 0.999, damage: 0 },
+      { id: 1, owner: "player", ships: 10, originId: 2, destId: 1, progress: 0, damage: 0 },
+    ]
+  );
+  for (let t = 0; t < 40; t++) tick(s, TICK_DT); // second wave has landed
+  assert(s.battles.length === 1 && s.battles[0]!.attackers.length === 1,
+    "same-owner wave merged into the existing pool");
+  fight(s);
+  assert(s.planets[1]!.owner === "player", "attacker reinforcement carried the assault");
+}
+
+// 9f. Defence spec and level multipliers stack on the defender bonus:
+// 1.2 × 1.5 (L3) × 2 (defence) = 3.6 per ship, which lifts the repel
+// threshold to 20 × 3.6^(1.2/2.2) ≈ 40 attackers.
+{
+  const fortress = () => {
+    const p = planet(1, { x: 100, owner: "ai1", garrison: 20, spec: "defence" });
+    p.heldTicks = DEVELOPMENT.levelTimes[2] * TICK_RATE;
+    return p;
+  };
+  closeTo(defenderStrengthMult(fortress()), 3.6, "bonus × level × spec = 3.6");
+
+  const held = mkState(
+    [planet(0, { owner: "player" }), fortress()],
+    [{ id: 0, owner: "player", ships: 34, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+  );
+  fight(held);
+  assert(held.planets[1]!.owner === "ai1", "L3 defence fortress repels 34 attackers");
+
+  const broken = mkState(
+    [planet(0, { owner: "player" }), fortress()],
+    [{ id: 0, owner: "player", ships: 90, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+  );
+  fight(broken);
+  assert(broken.planets[1]!.owner === "player", "overwhelming force still cracks the fortress");
+}
+
+// 9g. Production, development and conversion freeze under siege and resume
+// after (a 6-ship nuisance attack on 20 defenders can't win but takes time).
+{
+  const s = mkState(
+    [planet(0, { owner: "player" }), planet(1, { x: 100, owner: "ai1", garrison: 20 })],
+    [{ id: 0, owner: "player", ships: 6, originId: 0, destId: 1, progress: 0.999, damage: 0 }]
+  );
+  tick(s, TICK_DT); // arrival tick: production ran (no battle yet at step 1)
+  const p = s.planets[1]!;
+  const heldAtSiege = p.heldTicks;
+  const garrisonAtSiege = p.garrison;
+  tick(s, TICK_DT);
+  assert(p.heldTicks === heldAtSiege, "development frozen under siege");
+  assert(p.garrison <= garrisonAtSiege, "no production under siege");
+  fight(s);
+  assert(p.owner === "ai1", "nuisance attack repelled");
+  const heldAfter = p.heldTicks;
+  const garrisonAfter = p.garrison;
+  for (let t = 0; t < 60; t++) tick(s, TICK_DT);
+  assert(p.heldTicks === heldAfter + 60, "development resumed after the siege");
+  closeTo(p.garrison, garrisonAfter + PRODUCTION.medium, "production resumed after the siege");
+}
+
+// 9h. Multi-faction pairwise: player and ai1 both assault a neutral. The
+// head pool (player, lower fleet id) fights first and flips the planet; the
+// queued ai1 pool then fights the new player garrison — which now enjoys the
+// defender bonus — and, being far larger, takes the planet in turn.
+{
+  const s = mkState(
+    [
+      planet(0, { x: 0, owner: "player" }),
+      planet(1, { x: 300, owner: "ai1" }),
+      planet(2, { x: 100, garrison: 5 }),
+    ],
+    [
+      { id: 0, owner: "player", ships: 12, originId: 0, destId: 2, progress: 0.999, damage: 0 },
+      { id: 1, owner: "ai1", ships: 40, originId: 1, destId: 2, progress: 0.999, damage: 0 },
+    ]
+  );
+  let flippedToPlayer = false;
+  tick(s, TICK_DT); // land both fleets and open the battle
+  for (let t = 0; t < 2000 && s.battles.length > 0; t++) {
+    tick(s, TICK_DT);
+    if (s.planets[2]!.owner === "player") {
+      flippedToPlayer = true;
+      assert(
+        s.battles.length === 0 || s.battles[0]!.attackers[0]!.owner === "ai1",
+        "after the flip the queued ai1 pool fights the new defender"
+      );
+    }
+  }
+  assert(flippedToPlayer, "head pool flipped the neutral first");
+  assert(s.planets[2]!.owner === "ai1", "the queued pool then took the planet");
+  assert(s.battles.length === 0, "all battles resolved");
+}
+
+// 9i. Win check: a faction whose last force is a besieging pool is alive.
+{
+  const s = mkState([
+    planet(0, { x: 0, owner: "ai1", garrison: 50 }),
+    planet(1, { x: 300, owner: "ai1", garrison: 5 }),
+  ]);
+  s.battles.push({
+    planetId: 0,
+    defenderDamage: 0,
+    attackers: [{ owner: "player", ships: 3, damage: 0 }],
+  });
+  update(s, []);
+  assert(s.phase === "playing", "player alive while its pool still besieges");
+  for (let t = 0; t < 2000 && s.battles.length > 0; t++) update(s, []);
+  assert(s.phase === "aiWon", "player eliminated once the pool is wiped");
+}
+
+// 9j. predictBattle (the preview/AI estimator) agrees with the sim: same
+// winner, and survivors/duration close at mean roll (0.9–1.1 variance keeps
+// the sim within a few ships of the rollless prediction).
+{
+  assert(!predictBattle(21, 20, 1.2).attackerWins, "predictor: 21 v 20 loses");
+  assert(predictBattle(30, 20, 1.2).attackerWins, "predictor: 30 v 20 wins");
+  const pred = predictBattle(30, 20, 1.2);
+  const sim = duel(30, 20, 42);
+  assert(Math.abs(pred.survivors - sim.left) <= 3,
+    `predictor survivors near sim (${pred.survivors} vs ${sim.left})`);
+  assert(Math.abs(pred.ticks - sim.ticks) <= 20,
+    `predictor duration near sim (${pred.ticks} vs ${sim.ticks})`);
+}
+
+// ---------------------------------------------------------------------------
+// Acceptance scenario (QUA-119 "done when", updated for ticked battles):
+// 3 planets, 2 owners, 1 fleet in transit; production accumulates, the fleet
+// arrives and opens a battle (visible mid-fight at tick 100), the battle
+// resolves into a capture, and a new fleet spawns per spec numbers.
 //
 // Arithmetic: d(P0,P1)=600 -> 1/180 progress/tick; 0.51 + 89/180 >= 1 so the
 // fleet arrives during tick 89. P1 (ai1, large) holds 3 + 89*0.025 = 5.225 at
-// arrival; 6 > 5.225 flips it to player with 0.775, then 11 more large ticks
-// -> 1.05. P0 (medium): 10 + 100/60 = 11.666. P2 (neutral): untouched 5.
+// arrival; the 12-ship assault vs ~5×1.2 = 6 effective grinds it down over
+// tens of ticks (production frozen under siege), then flips it.
 // ---------------------------------------------------------------------------
 {
   const s = mkState(
@@ -599,7 +862,7 @@ function planet(id: number, opts: Partial<Planet>): Planet {
       planet(1, { x: 800, y: 800, owner: "ai1", size: "large", garrison: 3 }),
       planet(2, { x: 500, y: 400, owner: "neutral", size: "small", garrison: 5 }),
     ],
-    [{ id: 0, owner: "player", ships: 6, originId: 0, destId: 1, progress: 0.51, damage: 0 }]
+    [{ id: 0, owner: "player", ships: 12, originId: 0, destId: 1, progress: 0.51, damage: 0 }]
   );
 
   for (let t = 0; t < 100; t++) tick(s, TICK_DT);
@@ -608,22 +871,28 @@ function planet(id: number, opts: Partial<Planet>): Planet {
   assert(s.fleets.length === 0, "fleet in transit arrived");
   closeTo(s.planets[0]!.garrison, 10 + 100 / 60, "P0 production accumulated");
   assert(Math.floor(s.planets[0]!.garrison) === 11, "P0 displays 11");
-  assert(s.planets[1]!.owner === "player", "P1 captured by the arriving fleet");
-  closeTo(s.planets[1]!.garrison, 6 - (3 + 89 * 0.025) + 11 * 0.025, "P1 surplus + production");
-  assert(Math.floor(s.planets[1]!.garrison) === 1, "P1 displays 1");
+  assert(s.battles.length === 1, "the arrival opened a battle still raging at tick 100");
+  assert(s.planets[1]!.owner === "ai1", "P1 not yet captured mid-battle");
+
+  for (let t = 0; t < 100; t++) tick(s, TICK_DT);
+  assert(s.battles.length === 0, "battle resolved well within 100 more ticks");
+  assert(s.planets[1]!.owner === "player", "P1 captured by the surviving attackers");
+  const p1 = Math.floor(s.planets[1]!.garrison);
+  assert(p1 >= 7 && p1 <= 13, `P1 garrison is the survivors + resumed production (got ${p1})`);
   closeTo(s.planets[2]!.garrison, 5, "neutral P2 untouched");
 
   // New fleet spawns correctly per spec numbers.
+  closeTo(s.planets[0]!.garrison, 10 + 200 / 60, "P0 production ran the full 200 ticks");
   sendFleet(s, 0, 2, 0.5);
   assert(s.fleets.length === 1, "new fleet spawned");
   const f = s.fleets[0]!;
   assert(f.id === 1 && f.owner === "player" && f.originId === 0 && f.destId === 2, "fleet fields");
-  assert(f.ships === 5, "floor(11.666 * 0.5) = 5 ships");
-  closeTo(s.planets[0]!.garrison, 10 + 100 / 60 - 5, "P0 garrison after send");
+  assert(f.ships === 6, "floor(13.333 * 0.5) = 6 ships");
+  closeTo(s.planets[0]!.garrison, 10 + 200 / 60 - 6, "P0 garrison after send");
   tick(s, TICK_DT); // d(P0,P2) = 500 -> progress 200/60/500 = 1/150
   closeTo(s.fleets[0]!.progress, 1 / 150, "fleet progress after one tick");
 }
 
 console.log(
-  "sim tests OK (production, development, caps, specialisation, interception, predictRoute, travel, capture, tie, reinforce, id-order, JSON, sendFleet, acceptance)"
+  "sim tests OK (production, development, caps, specialisation, interception, predictRoute, travel, battles, capture, reinforce, id-order, JSON, sendFleet, acceptance)"
 );
