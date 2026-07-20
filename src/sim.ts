@@ -16,8 +16,9 @@ import {
   SPECS,
   INTERCEPT,
   SIZE_RADIUS,
+  BATTLE,
 } from "./config";
-import { RngState } from "./rng";
+import { RngState, createRng, mixSeed, nextRange } from "./rng";
 import { generateMap } from "./mapgen";
 import { AiState, aiDecide, nextDecisionDelay } from "./ai";
 
@@ -62,6 +63,26 @@ export interface Fleet {
   damage: number;
 }
 
+/** One hostile faction's force in a battle. Ships are whole; `damage` is the
+ * fractional casualty accumulator (same QUA-129 pattern as Fleet.damage). */
+export interface BattlePool {
+  owner: Owner;
+  ships: number;
+  damage: number;
+}
+
+/** An active fight at a planet: the garrison versus one or more hostile
+ * pools. Only `attackers[0]` (earliest arrival) trades casualties with the
+ * defender — later pools queue inert until the head pool dies or the planet
+ * flips (pairwise resolution; simultaneous three-way is out of scope). At
+ * most one battle exists per planet. Plain JSON data, like all of GameState. */
+export interface Battle {
+  planetId: number;
+  /** Fractional defender casualties pending against the garrison. */
+  defenderDamage: number;
+  attackers: BattlePool[];
+}
+
 export interface SendCommand {
   type: "send";
   owner: Owner;
@@ -91,6 +112,10 @@ export interface GameState {
   rng: RngState;
   planets: Planet[];
   fleets: Fleet[];
+  /** Active battles, at most one per planet, in creation order. Iteration
+   * order never affects outcomes: each battle only touches its own planet and
+   * draws its rolls from a keyed RNG, not the shared stream. */
+  battles: Battle[];
   nextFleetId: number;
   phase: Phase;
   /** AI opponents (QUA-123). Inside GameState (not an external controller) so
@@ -127,6 +152,16 @@ export function defendMultiplier(p: Planet): number {
   if (p.spec === "defence") return SPECS.defence.defendMult;
   if (p.spec === "naval") return SPECS.naval.defendMult;
   return 1;
+}
+
+/** Per-ship strength multiplier for a garrison defending in a battle: the
+ * structural defender bonus × development level × specialisation. The single
+ * source of truth shared by the sim's combat step, the outcome predictor
+ * (predict.ts) and the AI — they must never disagree. */
+export function defenderStrengthMult(p: Planet): number {
+  return (
+    BATTLE.defenderBonus * DEVELOPMENT.defendMult[planetLevel(p) - 1]! * defendMultiplier(p)
+  );
 }
 
 /** Interception zone radius in world units (QUA-129); 0 for neutrals. The
@@ -218,38 +253,106 @@ export function applyCommand(state: GameState, cmd: Command): void {
 }
 
 /** Fleet arrival: ownership is evaluated at arrival time. Same owner
- * reinforces; otherwise each defender is worth defendMultiplier(planet)
- * attackers (QUA-130; ×1 reduces to a plain 1:1 trade) — the planet flips
- * when the attackers exceed the multiplied garrison, paying its full
- * multiplied price; a failed attack kills ships/mult defenders (exact tie:
- * defender holds at 0, owner unchanged). Capture resets development and
- * specialisation. */
-function resolveArrival(planet: Planet, fleet: Fleet): void {
+ * reinforces the garrison (mid-battle too — that's the defender's
+ * reinforcement path). A hostile arrival never resolves instantly: it joins
+ * its faction's pool in the planet's battle, or opens a new battle (also vs
+ * neutrals and empty garrisons — one uniform rule). Battles are fought over
+ * the following ticks by stepBattles(). */
+function resolveArrival(state: GameState, planet: Planet, fleet: Fleet): void {
   if (planet.owner === fleet.owner) {
     planet.garrison += fleet.ships;
     return;
   }
-  const mult = defendMultiplier(planet);
-  if (fleet.ships > planet.garrison * mult) {
-    planet.owner = fleet.owner;
-    planet.garrison = fleet.ships - planet.garrison * mult;
-    planet.heldTicks = 0; // development resets on capture (QUA-128)
-    planet.spec = "standard"; // capture clears specialisation (QUA-130)
-    planet.nextSpec = "standard";
-    planet.convertTicks = 0;
-  } else {
-    planet.garrison -= fleet.ships / mult;
+  const battle = state.battles.find((b) => b.planetId === planet.id);
+  if (battle) {
+    const pool = battle.attackers.find((a) => a.owner === fleet.owner);
+    if (pool) pool.ships += fleet.ships;
+    else battle.attackers.push({ owner: fleet.owner, ships: fleet.ships, damage: 0 });
+    return;
   }
+  state.battles.push({
+    planetId: planet.id,
+    defenderDamage: 0,
+    attackers: [{ owner: fleet.owner, ships: fleet.ships, damage: 0 }],
+  });
+}
+
+/** One combat round for every active battle. Per battle per tick, both sides
+ * deal strength^exponent × rate × roll casualties/sec (config.BATTLE), where
+ * the defender's per-ship strength is defenderStrengthMult(planet) and the
+ * attacker fights unboosted. Rolls come from a throwaway RNG keyed by
+ * (seed, tick, planetId) — never state.rng, so battle count can't shift the
+ * shared stream, and a JSON snapshot resumes bit-identically. Fractional
+ * casualties accrue in accumulators; only whole ships are removed (QUA-129
+ * pattern). Casualties are computed from start-of-tick strengths and both
+ * applied; the attacker is checked first, so mutual destruction leaves the
+ * defender holding at 0 (the old exact-tie rule). A flip installs the head
+ * pool's survivors as the new garrison — who immediately enjoy the defender
+ * bonus against any queued pools — and resets development and specialisation
+ * (QUA-128/130). */
+function stepBattles(state: GameState, dt: number): void {
+  if (state.battles.length === 0) return;
+  for (const b of state.battles) {
+    const p = state.planets[b.planetId]!;
+    const pool = b.attackers[0]!;
+
+    const r = createRng(mixSeed(mixSeed(state.seed, state.tick), b.planetId));
+    const defRoll = nextRange(r, BATTLE.rollMin, BATTLE.rollMax); // defender first — fixed draw order
+    const attRoll = nextRange(r, BATTLE.rollMin, BATTLE.rollMax);
+
+    const defStr = Math.floor(p.garrison) * defenderStrengthMult(p);
+    const attStr = pool.ships;
+    pool.damage += Math.pow(defStr, BATTLE.exponent) * BATTLE.rate * dt * defRoll;
+    b.defenderDamage += Math.pow(attStr, BATTLE.exponent) * BATTLE.rate * dt * attRoll;
+
+    const poolWhole = Math.floor(pool.damage);
+    if (poolWhole > 0) {
+      pool.ships = Math.max(0, pool.ships - poolWhole);
+      pool.damage -= poolWhole;
+    }
+    const defWhole = Math.floor(b.defenderDamage);
+    if (defWhole > 0) {
+      p.garrison = Math.max(0, p.garrison - defWhole);
+      b.defenderDamage -= defWhole;
+    }
+
+    if (pool.ships <= 0) {
+      // Head pool wiped; the next queued pool (if any) fights from next tick.
+      b.attackers.shift();
+    } else if (Math.floor(p.garrison) <= 0) {
+      // Garrison wiped (a stranded sub-1 fraction can't fight): capture.
+      p.owner = pool.owner;
+      p.garrison = pool.ships; // may exceed the soft cap, like reinforcement
+      p.heldTicks = 0; // development resets on capture (QUA-128)
+      p.spec = "standard"; // capture clears specialisation (QUA-130)
+      p.nextSpec = "standard";
+      p.convertTicks = 0;
+      b.attackers.shift();
+      b.defenderDamage = 0; // the new defender starts a clean accumulator
+    }
+  }
+  state.battles = state.battles.filter((b) => b.attackers.length > 0);
 }
 
 /** Advance the simulation by one step of `dt` seconds. Spec step order
- * (QUA-119, extended by QUA-128/129/130) — do not reorder:
- *   1. production + development + conversion timers on owned planets
+ * (QUA-119, extended by QUA-128/129/130 and the battle rework) — do not
+ * reorder:
+ *   1. production + development + conversion timers on owned planets —
+ *      skipped entirely at planets with an active battle (a siege freezes
+ *      production, development and conversion)
  *   2. advance fleet progress
  *   3. interception attrition on in-transit fleets; destroyed fleets despawn
- *   4. resolve arrivals, simultaneous arrivals in FLEET-ID order
- *   5. increment tick counter */
+ *      (a besieged planet's zone still fires — it weakens as the garrison is
+ *      ground down, since zoneDps reads the live count)
+ *   4. resolve arrivals, simultaneous arrivals in FLEET-ID order — hostile
+ *      arrivals join or open battles; reinforcements landing this tick fight
+ *      from this tick
+ *   5. battle combat round (stepBattles)
+ *   6. increment tick counter */
 export function tick(state: GameState, dt: number): GameState {
+  const inBattle = new Set<number>();
+  for (const b of state.battles) inBattle.add(b.planetId);
+
   // Empire-wide economy bonus (QUA-130): count each owner's completed economy
   // planets once, before the production loop — converting ones don't count.
   const econCount: Partial<Record<Owner, number>> = {};
@@ -261,6 +364,7 @@ export function tick(state: GameState, dt: number): GameState {
 
   for (const p of state.planets) {
     if (p.owner === NEUTRAL) continue; // neutrals neither produce nor develop
+    if (inBattle.has(p.id)) continue; // sieges freeze production/dev/convert
     if (p.convertTicks > 0) {
       // Converting: no production, but development continues (QUA-130).
       p.convertTicks -= 1;
@@ -331,10 +435,12 @@ export function tick(state: GameState, dt: number): GameState {
   if (arrived.length > 0) {
     arrived.sort((a, b) => a.id - b.id);
     for (const f of arrived) {
-      resolveArrival(state.planets[f.destId]!, f);
+      resolveArrival(state, state.planets[f.destId]!, f);
     }
     state.fleets = state.fleets.filter((f) => f.progress < 1);
   }
+
+  stepBattles(state, dt);
 
   state.tick += 1;
   return state;
@@ -371,6 +477,13 @@ export function update(state: GameState, commands: readonly Command[]): void {
   for (const f of state.fleets) {
     if (f.owner === PLAYER) playerAlive = true;
     else aiAlive = true;
+  }
+  // A faction whose last force is a besieging pool is still alive.
+  for (const b of state.battles) {
+    for (const a of b.attackers) {
+      if (a.owner === PLAYER) playerAlive = true;
+      else aiAlive = true;
+    }
   }
   if (!playerAlive) state.phase = "aiWon";
   else if (!aiAlive) state.phase = "playerWon";

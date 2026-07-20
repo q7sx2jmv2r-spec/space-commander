@@ -8,7 +8,7 @@
 // tick — so this is deliberately an estimate (label it as one in UI).
 // DOM-free; deterministic (pure function of the state passed in).
 
-import { SHIP_SPEED } from "./config";
+import { BATTLE, SHIP_SPEED, TICK_DT } from "./config";
 import { GameState, Owner, zoneRadius, zoneDps } from "./sim";
 
 /** A hostile stretch of the route, as fractions of the full path (0..1). */
@@ -68,6 +68,58 @@ export function predictPath(
   }
 
   return { losses, survivors: Math.max(0, Math.floor(ships - losses)), segments };
+}
+
+export interface BattlePrediction {
+  attackerWins: boolean;
+  /** Whole ships the winning side keeps (attacker survivors on a win, the
+   * remaining garrison on a loss). */
+  survivors: number;
+  /** Battle length in sim ticks. */
+  ticks: number;
+}
+
+/** Iteration cap: any real battle ends orders of magnitude sooner; this only
+ * guards against pathological inputs (e.g. thousands vs thousands). */
+const PREDICT_BATTLE_MAX_TICKS = 1200;
+
+/** Predicted outcome of a battle at mean roll (1.0): the exact stepBattles
+ * loop with the variance removed. `defenderMult` is the per-ship strength
+ * multiplier from sim.defenderStrengthMult(planet), frozen at now like the
+ * rest of the estimator. Shared by the drag-preview and the AI's attack
+ * feasibility so the defender bonus is learnable, not hidden math. */
+export function predictBattle(
+  attackerShips: number,
+  defenderGarrison: number,
+  defenderMult: number
+): BattlePrediction {
+  let att = Math.floor(attackerShips);
+  let gar = defenderGarrison;
+  let attDamage = 0;
+  let defDamage = 0;
+  let t = 0;
+  while (t < PREDICT_BATTLE_MAX_TICKS) {
+    t += 1;
+    const defStr = Math.floor(gar) * defenderMult;
+    attDamage += Math.pow(defStr, BATTLE.exponent) * BATTLE.rate * TICK_DT;
+    defDamage += Math.pow(att, BATTLE.exponent) * BATTLE.rate * TICK_DT;
+    const attWhole = Math.floor(attDamage);
+    if (attWhole > 0) {
+      att = Math.max(0, att - attWhole);
+      attDamage -= attWhole;
+    }
+    const defWhole = Math.floor(defDamage);
+    if (defWhole > 0) {
+      gar = Math.max(0, gar - defWhole);
+      defDamage -= defWhole;
+    }
+    // Attacker checked first: mutual destruction is a defender hold at 0.
+    if (att <= 0) return { attackerWins: false, survivors: Math.floor(gar), ticks: t };
+    if (Math.floor(gar) <= 0) return { attackerWins: true, survivors: att, ticks: t };
+  }
+  // Cap hit (absurd inputs): call it for whoever holds more raw strength.
+  const attackerWins = att > Math.floor(gar) * defenderMult;
+  return { attackerWins, survivors: attackerWins ? att : Math.floor(gar), ticks: t };
 }
 
 /** predictPath between two planets' centres — the common send-shaped case. */

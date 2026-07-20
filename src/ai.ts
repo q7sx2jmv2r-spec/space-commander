@@ -21,8 +21,8 @@ import {
   DEVELOPMENT,
 } from "./config";
 import { nextRange } from "./rng";
-import { planetLevel, garrisonCap, defendMultiplier } from "./sim";
-import { predictRoute } from "./predict";
+import { planetLevel, garrisonCap, defendMultiplier, defenderStrengthMult } from "./sim";
+import { predictBattle, predictRoute } from "./predict";
 import type { Command, GameState, Planet } from "./sim";
 
 /** Per-opponent AI state. Lives inside GameState so snapshot/resume keeps
@@ -57,11 +57,11 @@ function dist(a: Planet, b: Planet): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
 }
 
-/** Effective ships an attack must exceed when a fleet launched now arrives:
- * the garrison plus its production over the travel time (level multiplier
- * applied, capped, neutrals and converting planets produce 0), multiplied by
- * the spec's defence strength (QUA-130/132). */
-function defenseAtArrival(target: Planet, from: Planet): number {
+/** Projected garrison when a fleet launched now arrives: the garrison plus
+ * its production over the travel time (level multiplier applied, capped;
+ * neutrals and converting planets produce 0). Unmultiplied — feed it to
+ * predictBattle with defenderStrengthMult(target) to judge an attack. */
+function garrisonAtArrival(target: Planet, from: Planet): number {
   const travel = dist(from, target) / SHIP_SPEED;
   let garrison = target.garrison;
   if (target.owner !== "neutral" && target.convertTicks === 0) {
@@ -71,14 +71,37 @@ function defenseAtArrival(target: Planet, from: Planet): number {
       garrison = Math.min(cap, garrison + rate * travel);
     }
   }
-  return garrison * defendMultiplier(target);
+  return garrison;
 }
 
-/** Total ships aboard hostile fleets currently inbound to `planet`. */
+/** Minimum fraction of the arriving force that must be predicted to survive
+ * the battle for a feasibility-checking tier to attack. Ticked battles make
+ * marginal wins ruinous (the strength exponent), so a bare predicted win is a
+ * pyrrhic trade that bleeds an aggressive tier dry — demand a real margin. */
+const WIN_MARGIN_FRACTION = 0.3;
+
+/** Would `ships` arriving at `target` (launched from `from`) win the ensuing
+ * battle decisively (survivors ≥ WIN_MARGIN_FRACTION of the force)? The same
+ * mean-roll predictor as the player's preview — AI and UI must agree on what
+ * the defender bonus means. */
+function attackWins(ships: number, target: Planet, from: Planet): boolean {
+  if (ships < 1) return false;
+  const pred = predictBattle(ships, garrisonAtArrival(target, from), defenderStrengthMult(target));
+  return pred.attackerWins && pred.survivors >= ships * WIN_MARGIN_FRACTION;
+}
+
+/** Total hostile ships bearing on `planet`: aboard inbound fleets, plus any
+ * pools already besieging it (an ongoing battle IS a threat). */
 function incomingHostile(state: GameState, planet: Planet): number {
   let ships = 0;
   for (const f of state.fleets) {
     if (f.destId === planet.id && f.owner !== planet.owner) ships += f.ships;
+  }
+  for (const b of state.battles) {
+    if (b.planetId !== planet.id) continue;
+    for (const a of b.attackers) {
+      if (a.owner !== planet.owner) ships += a.ships;
+    }
   }
   return ships;
 }
@@ -227,7 +250,7 @@ function findStagingHop(
     if (hop.id === source.id || hop.id === target.id) continue;
     if (hop.owner !== ai.owner) {
       if (hop.owner !== "neutral") continue;
-      if (sendable <= defenseAtArrival(hop, source)) continue; // can't take it
+      if (!attackWins(sendable, hop, source)) continue; // can't take it
     }
     if (dist(hop, target) >= dist(source, target)) continue; // must close in
     const leg = predictRoute(state, ai.owner, source.id, hop.id, sendable);
@@ -262,15 +285,24 @@ function planAttacks(
   if (mine.length === 0) return;
 
   const source = mine[0]!;
-  const sendable = Math.floor(source.garrison * cfg.attackFraction);
-  if (sendable < 1) return;
+  if (Math.floor(source.garrison * cfg.attackFraction) < 1) return;
   const reserveOk = (p: Planet, frac: number) =>
     p.garrison * (1 - frac) >= p.garrison * cfg.reserveFraction;
   const tooHot = (losses: number, ships: number) => losses > cfg.maxAttritionFraction * ships;
 
+  // Sends issued this decision drain their sources sequentially (applyCommand
+  // takes each fraction from what's left) — model that, or every follow-up
+  // send is sized against a stale garrison and launches an under-strength
+  // dribble that the defender bonus slaughters.
+  const modeled = new Map<number, number>();
+  const garrisonOf = (p: Planet) => modeled.get(p.id) ?? p.garrison;
+  const drain = (p: Planet, ships: number) => modeled.set(p.id, garrisonOf(p) - ships);
+
   const targets = scoreTargets(state, cfg, source, ai.owner);
   for (const t of targets) {
     if (budget <= 0) return;
+    const sendable = Math.floor(garrisonOf(source) * cfg.attackFraction);
+    if (sendable < 1) return;
     const target = t.planet;
     const route = predictRoute(state, ai.owner, source.id, target.id, sendable);
 
@@ -280,6 +312,7 @@ function planAttacks(
         if (hop && reserveOk(source, cfg.attackFraction) && leavesDefensible(state, source, sendable)) {
           log(ai, state, `stage toward p${target.id} via p${hop.id}: direct route loses ${route.losses.toFixed(1)}/${sendable}`);
           send(commands, ai, [source.id], hop.id, cfg.attackFraction);
+          drain(source, sendable);
           budget -= 1;
         }
       }
@@ -298,11 +331,11 @@ function planAttacks(
       continue;
     }
 
-    const needed = defenseAtArrival(target, source);
-    if (survivors > needed) {
+    if (attackWins(Math.floor(survivors), target, source)) {
       if (!reserveOk(source, cfg.attackFraction) || !leavesDefensible(state, source, sendable)) continue;
-      log(ai, state, `attack p${target.id}: ${sendable} (−${route.losses.toFixed(1)} in transit) vs ${needed.toFixed(1)} at arrival, from p${source.id} (score ${t.score.toFixed(1)})`);
+      log(ai, state, `attack p${target.id}: ${sendable} (−${route.losses.toFixed(1)} in transit) vs ${garrisonAtArrival(target, source).toFixed(1)}×${defenderStrengthMult(target).toFixed(2)} at arrival, from p${source.id} (score ${t.score.toFixed(1)})`);
       send(commands, ai, [source.id], target.id, cfg.attackFraction);
+      drain(source, sendable);
       budget -= 1;
       continue;
     }
@@ -311,21 +344,23 @@ function planAttacks(
       // Pool the 2–3 strongest planets; each contributes attackFraction and
       // pays its own predicted route attrition.
       const pool: Planet[] = [];
+      const contribs: number[] = [];
       let pooledSurvivors = 0;
       for (const p of mine) {
         if (pool.length === 3) break;
-        const contrib = Math.floor(p.garrison * cfg.attackFraction);
+        const contrib = Math.floor(garrisonOf(p) * cfg.attackFraction);
         if (contrib < 1) continue;
         if (!leavesDefensible(state, p, contrib)) continue;
         const r = predictRoute(state, ai.owner, p.id, target.id, contrib);
         if (tooHot(r.losses, contrib)) continue;
         pool.push(p);
+        contribs.push(contrib);
         pooledSurvivors += contrib - r.losses;
       }
-      const neededPooled = defenseAtArrival(target, pool[pool.length - 1] ?? source);
-      if (pool.length >= 2 && pooledSurvivors > neededPooled) {
-        log(ai, state, `pooled attack p${target.id}: ${pooledSurvivors.toFixed(1)} surviving from [${pool.map((p) => `p${p.id}`).join(",")}] vs ${neededPooled.toFixed(1)} at arrival`);
+      if (pool.length >= 2 && attackWins(Math.floor(pooledSurvivors), target, pool[pool.length - 1] ?? source)) {
+        log(ai, state, `pooled attack p${target.id}: ${pooledSurvivors.toFixed(1)} surviving from [${pool.map((p) => `p${p.id}`).join(",")}] vs ${garrisonAtArrival(target, pool[pool.length - 1] ?? source).toFixed(1)} at arrival`);
         send(commands, ai, pool.map((p) => p.id), target.id, cfg.attackFraction);
+        for (let i = 0; i < pool.length; i++) drain(pool[i]!, contribs[i]!);
         budget -= 1;
       }
     }

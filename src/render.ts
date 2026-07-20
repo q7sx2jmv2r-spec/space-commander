@@ -10,12 +10,13 @@ import {
   PLAYER,
   WORLD_W,
   WORLD_H,
+  defenderStrengthMult,
   planetLevel,
   zoneRadius,
   zoneDps,
 } from "./sim";
 import { SIZE_RADIUS, SPECS, TICK_RATE } from "./config";
-import { predictPath } from "./predict";
+import { predictBattle, predictPath } from "./predict";
 import type { InputView } from "./input";
 
 const BG = "#0b0e1a";
@@ -56,6 +57,14 @@ const TRACER_ALPHA = 0.55;
 /** In-transit fleet death effect duration and ring-buffer size. */
 const POOF_MS = 400;
 const POOF_SLOTS = 16;
+/** Battle impact rings: shorter, smaller poof siblings that fire where a side
+ * lost a whole ship this tick. Fixed ring buffer, like poofs. */
+const BATTLE_HIT_MS = 300;
+const BATTLE_HIT_SLOTS = 24;
+/** Besieger badge: distance beyond the planet rim, and the angular fan for
+ * multiple queued pools (head pool at 12 o'clock, deterministic). */
+const SIEGE_OFFSET = 26;
+const SIEGE_ANGLE_STEP = 0.9;
 /** Hostile stretches of the trajectory preview (QUA-131/129). */
 const HOSTILE_COLOR = "#ff5d5d";
 /** Passive enemy/neutral info tooltip lifetime (QUA-131). */
@@ -160,6 +169,26 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   let lastPoofTick = -1;
   const currFleetIds = new Set<number>();
 
+  // Battle impact rings: same fixed-ring-buffer pattern as poofs.
+  const hitX = new Float64Array(BATTLE_HIT_SLOTS);
+  const hitY = new Float64Array(BATTLE_HIT_SLOTS);
+  const hitAt = new Float64Array(BATTLE_HIT_SLOTS).fill(-1e9);
+  let hitNext = 0;
+  let lastHitTick = -1;
+
+  function spawnHit(x: number, y: number, now: number): void {
+    hitX[hitNext] = x;
+    hitY[hitNext] = y;
+    hitAt[hitNext] = now;
+    hitNext = (hitNext + 1) % BATTLE_HIT_SLOTS;
+  }
+
+  /** Where pool `index` of a siege sits: fanned around the rim from 12
+   * o'clock. Deterministic and stable, so the badge doesn't jitter. */
+  function siegeAngle(index: number): number {
+    return -Math.PI / 2 + index * SIEGE_ANGLE_STEP;
+  }
+
   /** Interpolated fleet position for this frame (matches drawFleets). */
   function fleetFramePos(
     curr: GameState,
@@ -213,6 +242,35 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
       poofY[poofNext] = origin.y + (dest.y - origin.y) * f.progress;
       poofAt[poofNext] = now;
       poofNext = (poofNext + 1) % POOF_SLOTS;
+    }
+  }
+
+  /** Spawn impact rings where a battle removed whole ships this tick: on the
+   * planet rim when the garrison dropped (rim angle walked by tick — varied
+   * but deterministic, no Math.random) and at the head pool's badge when the
+   * attackers lost ships. Runs once per sim tick, like updatePoofs. */
+  function updateBattleHits(prev: GameState, curr: GameState, now: number): void {
+    if (curr.tick < lastHitTick) hitAt.fill(-1e9); // new game
+    if (curr.tick === lastHitTick) return;
+    lastHitTick = curr.tick;
+    for (const b of curr.battles) {
+      const p = curr.planets[b.planetId]!;
+      const pp = prev.planets[b.planetId];
+      const r = SIZE_RADIUS[p.size];
+      if (pp && Math.floor(p.garrison) < Math.floor(pp.garrison)) {
+        const a = (curr.tick * 2.4) % (Math.PI * 2);
+        spawnHit(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r, now);
+      }
+      const head = b.attackers[0];
+      const pb = prev.battles.find((x) => x.planetId === b.planetId);
+      if (head && pb) {
+        const prevPool = pb.attackers.find((a) => a.owner === head.owner);
+        if (prevPool && head.ships < prevPool.ships) {
+          const a = siegeAngle(0);
+          const d = r + SIEGE_OFFSET;
+          spawnHit(p.x + Math.cos(a) * d, p.y + Math.sin(a) * d, now);
+        }
+      }
     }
   }
 
@@ -273,13 +331,13 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
   /** White text over a background-colored outline: keeps counters legible on
    * any owner color without resorting to a background box. Font size is in
    * world units (the current transform's). */
-  function haloText(text: string, x: number, y: number, fontSize: number): void {
+  function haloText(text: string, x: number, y: number, fontSize: number, fill = "#ffffff"): void {
     g.font = `bold ${fontSize}px system-ui, sans-serif`;
     g.lineJoin = "round";
     g.strokeStyle = BG;
     g.lineWidth = Math.max(3, fontSize / 5);
     g.strokeText(text, x, y);
-    g.fillStyle = "#ffffff";
+    g.fillStyle = fill;
     g.fillText(text, x, y);
   }
 
@@ -318,6 +376,52 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
         g.lineTo(scratchPos.x, scratchPos.y);
         g.stroke();
       }
+    }
+    g.globalAlpha = 1;
+  }
+
+  /** Besieging pools at embattled planets: a fleet-style badge per pool,
+   * fanned around the rim, its count ticking down as the battle grinds.
+   * Queued pools (pairwise rule — only attackers[0] fights) draw dimmed. */
+  function drawBattles(curr: GameState, scale: number): void {
+    for (const b of curr.battles) {
+      const p = curr.planets[b.planetId]!;
+      const pr = SIZE_RADIUS[p.size];
+      for (let i = 0; i < b.attackers.length; i++) {
+        const pool = b.attackers[i]!;
+        const a = siegeAngle(i);
+        const d = pr + SIEGE_OFFSET;
+        const x = p.x + Math.cos(a) * d;
+        const y = p.y + Math.sin(a) * d;
+        const r = Math.min(16, 6 + 2 * Math.sqrt(pool.ships));
+        g.fillStyle = OWNER_STROKE[pool.owner];
+        if (i > 0) g.globalAlpha = 0.55;
+        g.beginPath();
+        g.arc(x, y, r, 0, Math.PI * 2);
+        g.fill();
+        g.globalAlpha = 1;
+        if (r * scale >= MIN_FLEET_COUNT_RADIUS) {
+          g.textAlign = "center";
+          g.textBaseline = "bottom";
+          haloText(String(pool.ships), x, y - r - 4, FLEET_FONT / scale);
+        }
+      }
+    }
+  }
+
+  /** Fade-out rings where battle casualties landed this tick: smaller,
+   * shorter-lived poof siblings. */
+  function drawBattleHits(now: number): void {
+    for (let i = 0; i < BATTLE_HIT_SLOTS; i++) {
+      const age = now - hitAt[i]!;
+      if (age >= BATTLE_HIT_MS) continue;
+      const t = age / BATTLE_HIT_MS;
+      g.globalAlpha = 1 - t;
+      g.strokeStyle = "#ffffff";
+      g.lineWidth = 1.5 * (1 - t);
+      g.beginPath();
+      g.arc(hitX[i]!, hitY[i]!, 3 + 10 * t, 0, Math.PI * 2);
+      g.stroke();
     }
     g.globalAlpha = 1;
   }
@@ -507,17 +611,38 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
       g.arc(ex, ey, 5 / scale, 0, Math.PI * 2);
       g.fill();
 
-      // Arrival estimate at the snapped target — "~" marks it an estimate
-      // (garrisons change in flight; predictPath freezes them at now).
+      // Outcome estimate at the snapped target — "~" marks it an estimate
+      // (garrisons change in flight; everything is frozen at now). A friendly
+      // target shows the arriving reinforcements; a hostile one runs the
+      // mean-roll battle predictor so the defender bonus is learnable: a win
+      // shows the expected post-battle survivors, a loss shows ✕.
       if (target) {
         g.textAlign = "center";
         g.textBaseline = "bottom";
-        haloText(
-          `~${survivors}`,
-          target.x,
-          target.y - SIZE_RADIUS[target.size] - 10,
-          Math.max(MIN_GARRISON_FONT / scale, 14)
-        );
+        const ty = target.y - SIZE_RADIUS[target.size] - 10;
+        const fontSize = Math.max(MIN_GARRISON_FONT / scale, 14);
+        if (target.owner === PLAYER) {
+          haloText(`~${survivors}`, target.x, ty, fontSize);
+        } else {
+          // Ships already besieging the target join the assault they'd land in.
+          let pooled = survivors;
+          const battle = curr.battles.find((b) => b.planetId === target.id);
+          if (battle) {
+            for (const pool of battle.attackers) {
+              if (pool.owner === PLAYER) pooled += pool.ships;
+            }
+          }
+          const outcome = predictBattle(
+            pooled,
+            Math.floor(target.garrison),
+            defenderStrengthMult(target)
+          );
+          if (outcome.attackerWins) {
+            haloText(`~${outcome.survivors}`, target.x, ty, fontSize);
+          } else {
+            haloText("✕", target.x, ty, fontSize, HOSTILE_COLOR);
+          }
+        }
       }
     } else {
       g.strokeStyle = "#ffffff";
@@ -575,6 +700,7 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
 
     updateCaptureFlashes(curr, now);
     updatePoofs(prev, curr, now);
+    updateBattleHits(prev, curr, now);
 
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.fillStyle = BG;
@@ -592,9 +718,11 @@ export function createRenderer(canvas: HTMLCanvasElement): Renderer {
     updateFiring(curr, alpha);
     drawZones(curr, scale);
     drawPlanets(curr, view.selection, scale, now);
+    drawBattles(curr, scale);
     drawFleets(curr, alpha, scale);
     drawTracers(curr, alpha, scale);
     drawPoofs(now);
+    drawBattleHits(now);
     drawGestures(curr, view, scale);
 
     // Passive info tooltip from tapping an enemy/neutral planet (QUA-131):
