@@ -22,12 +22,31 @@ export interface Hud {
   update(state: GameState, view: InputView, playing: boolean): void;
 }
 
-/** Picker entries: shape glyphs echo the canvas markers (never colour alone). */
+/** Picker entries: miniature silhouettes of the QUA-127 shape language
+ * (circle / hexagon / ring / rounded square) so the picker itself teaches
+ * how specs read on the map. Static trusted SVG, `currentColor` so the
+ * existing text-colour and :disabled styles apply. */
 const SPEC_OPTIONS: ReadonlyArray<{ to: Spec; glyph: string; label: string }> = [
-  { to: "standard", glyph: "○", label: "Std" },
-  { to: "defence", glyph: "▼", label: "Def" },
-  { to: "naval", glyph: "∧", label: "Nav" },
-  { to: "economy", glyph: "◆", label: "Eco" },
+  {
+    to: "standard",
+    glyph: '<svg width="22" height="22" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"/></svg>',
+    label: "Std",
+  },
+  {
+    to: "defence",
+    glyph: '<svg width="22" height="22" viewBox="0 0 24 24"><polygon points="12,3 19.8,7.5 19.8,16.5 12,21 4.2,16.5 4.2,7.5" fill="currentColor"/></svg>',
+    label: "Def",
+  },
+  {
+    to: "naval",
+    glyph: '<svg width="22" height="22" viewBox="0 0 24 24"><circle cx="12" cy="12" r="5.5" fill="currentColor"/><ellipse cx="12" cy="12" rx="10" ry="3.4" transform="rotate(-20 12 12)" fill="none" stroke="currentColor" stroke-width="2"/></svg>',
+    label: "Nav",
+  },
+  {
+    to: "economy",
+    glyph: '<svg width="22" height="22" viewBox="0 0 24 24"><rect x="4.5" y="4.5" width="15" height="15" rx="5" fill="currentColor"/></svg>',
+    label: "Eco",
+  },
 ];
 
 function $(id: string): HTMLElement {
@@ -47,7 +66,7 @@ export function attachHud(canvas: HTMLCanvasElement, handlers: HudHandlers): Hud
     const b = document.createElement("button");
     const glyph = document.createElement("span");
     glyph.className = "glyph";
-    glyph.textContent = opt.glyph;
+    glyph.innerHTML = opt.glyph; // static silhouette markup from SPEC_OPTIONS
     const label = document.createElement("span");
     label.textContent = opt.label;
     b.append(glyph, label);

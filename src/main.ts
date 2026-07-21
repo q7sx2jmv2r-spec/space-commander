@@ -32,6 +32,12 @@ const params = new URLSearchParams(location.search);
 const scenario = params.get("scenario");
 setAiLog(params.get("ailog") === "1");
 
+// Kick the Contour webfont (QUA-127) so canvas numerals don't swap from the
+// fallback mid-game; fire-and-forget, the halo stroke keeps either legible.
+if (typeof document !== "undefined" && document.fonts) {
+  for (const w of [400, 500, 700]) void document.fonts.load(`${w} 16px "Space Grotesk"`);
+}
+
 function settingsFromUrl(): SkirmishSettings {
   const factions: FactionCount = params.get("factions") === "3" ? 3 : 2;
   const valid: AiTier[] = ["easy", "medium", "hard"];

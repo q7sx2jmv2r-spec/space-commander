@@ -15,6 +15,8 @@ import { GameState, Owner, zoneRadius, zoneDps } from "./sim";
 export interface HostileSegment {
   t0: number;
   t1: number;
+  /** Zone owner, so the preview can overdraw in that owner's colour. */
+  owner: Owner;
 }
 
 export interface RoutePrediction {
@@ -63,7 +65,7 @@ export function predictPath(
       const t1 = Math.min(1, (-b + sq) / (2 * a));
       if (t1 <= t0) continue;
       losses += (dps * (t1 - t0) * len) / SHIP_SPEED;
-      segments.push({ t0, t1 });
+      segments.push({ t0, t1, owner: p.owner });
     }
   }
 

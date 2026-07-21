@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Contour Design System — Space Commander</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  /* ---- Core tokens ---- */
+  --bg:#0d2015; --bg-raise:#112b1d; --line:#1d4530; --line-dim:#173a28;
+  --txt:#eafff0; --txt-dim:#9db8a8; --ink:#0d1420;
+  --player:#7df0a5; --player-hi:#a9ffcb;
+  --enemy:#d94a97; --enemy-v:#8b7cf7; --enemy-hi:#f08ac2;
+  --ai2:#f2b04e; --ai2-hi:#ffd08a;
+  --ai3:#6fb8f0; --ai3-hi:#a8d8ff;
+  --neutral:#57806b; --neutral-hi:#6a9480;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  background:var(--bg); color:var(--txt);
+  font-family:'Space Grotesk',system-ui,sans-serif;
+  padding:28px 16px 60px; display:flex; flex-direction:column; align-items:center;
+}
+/* grain overlay applied to cards */
+.grain{position:relative;}
+.grain::after{
+  content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit;
+  opacity:.35; mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+}
+main{width:100%; max-width:920px;}
+h1{font-size:22px; letter-spacing:.04em;}
+.sub{color:var(--txt-dim); font-size:13.5px; margin:6px 0 26px; max-width:640px;}
+section{margin-bottom:34px;}
+h2{font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--txt-dim); margin-bottom:12px;}
+.card{
+  background:var(--bg-raise); border:1px solid var(--line); border-radius:14px;
+  padding:18px; overflow:hidden;
+}
+canvas{display:block; width:100%; height:auto;}
+
+/* ---- token swatches ---- */
+.swatches{display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px;}
+.sw{border:1px solid var(--line); border-radius:10px; padding:10px; background:var(--bg);}
+.sw .chip{height:40px; border-radius:7px; margin-bottom:8px;}
+.sw .nm{font-size:12px; font-weight:700;}
+.sw .hx{font-size:11px; color:var(--txt-dim);}
+
+/* ---- typography samples ---- */
+.type-row{display:flex; gap:26px; flex-wrap:wrap; align-items:baseline;}
+.garrison{font-weight:700; font-size:44px; color:var(--txt);
+  text-shadow:0 0 0 var(--bg), -2px 0 var(--bg), 2px 0 var(--bg), 0 -2px var(--bg), 0 2px var(--bg);}
+.tlabel{font-size:11px; color:var(--txt-dim); display:block; margin-top:4px;}
+
+/* ---- DOM chrome ---- */
+.chrome-grid{display:grid; grid-template-columns:1fr; gap:16px;}
+@media(min-width:760px){.chrome-grid{grid-template-columns:1fr 1fr;}}
+button{font-family:inherit; cursor:pointer;}
+.btn{
+  display:inline-block; border:none; border-radius:12px; padding:14px 26px;
+  font-size:16px; font-weight:700; background:var(--player); color:var(--ink);
+  box-shadow:0 0 18px rgba(125,240,165,.35);
+}
+.btn:active{transform:translateY(1px);}
+.btn.secondary{background:transparent; color:var(--txt); border:1.5px solid var(--line); box-shadow:none;}
+.btn.danger{background:var(--enemy); color:var(--ink); box-shadow:0 0 18px rgba(217,74,151,.35);}
+.round{
+  width:48px; height:48px; border-radius:50%; border:1.5px solid var(--line);
+  background:var(--bg-raise); color:var(--txt); font-size:16px;
+}
+.chip-pill{
+  border-radius:999px; border:1.5px solid var(--player); background:rgba(125,240,165,.12);
+  color:var(--player); padding:9px 18px; font-weight:700; font-size:15px;
+}
+.seg{display:flex; border:1.5px solid var(--line); border-radius:11px; overflow:hidden; width:fit-content;}
+.seg button{
+  background:transparent; border:none; color:var(--txt-dim); padding:10px 16px; font-size:14px; font-weight:500;
+}
+.seg button.active{background:var(--player); color:var(--ink); font-weight:700;}
+input[type=text]{
+  background:var(--bg); border:1.5px solid var(--line); border-radius:10px;
+  color:var(--txt); padding:11px 14px; font-family:inherit; font-size:15px; width:160px;
+}
+input[type=text]::placeholder{color:var(--txt-dim);}
+input[type=text]:focus{outline:none; border-color:var(--player);}
+.spec-picker{border:1px solid var(--line); border-radius:14px; background:var(--bg); padding:12px; width:fit-content;}
+.spec-cost{font-size:12px; color:var(--txt-dim); margin-bottom:8px;}
+.spec-row{display:flex; gap:8px;}
+.spec-opt{
+  width:52px; height:52px; border-radius:12px; border:1.5px solid var(--line);
+  background:var(--bg-raise); color:var(--txt); font-size:19px;
+}
+.spec-opt.sel{border-color:var(--player); box-shadow:0 0 12px rgba(125,240,165,.3);}
+.overlay-demo{
+  border:1px solid var(--line); border-radius:16px; background:var(--bg-raise);
+  padding:26px; text-align:center;
+}
+.overlay-demo h3{font-size:26px; letter-spacing:.03em;}
+.overlay-demo .os{color:var(--txt-dim); font-size:13.5px; margin:6px 0 16px;}
+.overlay-demo ul{list-style:none; margin:0 0 18px; font-size:13.5px; color:var(--txt-dim);}
+.overlay-demo li b{color:var(--txt);}
+.row-gap{display:flex; gap:10px; justify-content:center; flex-wrap:wrap;}
+.lbl{font-size:11px; color:var(--txt-dim); letter-spacing:.08em; text-transform:uppercase; margin:14px 0 8px;}
+.victory{color:var(--player);} .defeat{color:var(--enemy);}
+</style>
+</head>
+<body>
+<main>
+<h1>Contour Design System</h1>
+<p class="sub">Every element the Space Commander renderer, HUD and chrome draws, restyled in the Contour direction. Animated cells show timing-dependent states. Grain and topo treatments applied throughout.</p>
+
+<!-- ============ 1. TOKENS ============ -->
+<section>
+  <h2>1 · Color tokens — five owners (fill / highlight)</h2>
+  <div class="card grain">
+    <div class="swatches" id="swatches"></div>
+  </div>
+</section>
+
+<section>
+  <h2>2 · Typography & halo numerals</h2>
+  <div class="card grain">
+    <div class="type-row">
+      <div><span class="garrison">42</span><span class="tlabel">Garrison — Space Grotesk 700, halo stroke</span></div>
+      <div><span style="font-size:22px;font-weight:700;">Skirmish setup</span><span class="tlabel">UI heading — 700</span></div>
+      <div><span style="font-size:14px;color:var(--txt-dim);">Production, fleets and AI are frozen</span><span class="tlabel">Body / dim — 400</span></div>
+      <div><span style="font-size:17px;font-weight:700;">~12</span> <span style="font-size:17px;font-weight:700;color:var(--enemy);">✕</span><span class="tlabel">Outcome estimates</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ 2. PLANETS ============ -->
+<section>
+  <h2>3 · Planets — owners × sizes</h2>
+  <div class="card grain"><canvas id="cvGrid" width="1720" height="1080"></canvas></div>
+</section>
+
+<section>
+  <h2>4 · Planet shape experiment — spec changes the silhouette</h2>
+  <div class="card grain"><canvas id="cvStates" width="1720" height="1150"></canvas></div>
+</section>
+
+<!-- ============ 3. EFFECTS ============ -->
+<section>
+  <h2>5 · Combat & feedback effects</h2>
+  <div class="card grain"><canvas id="cvFx" width="1720" height="460"></canvas></div>
+</section>
+
+<!-- ============ 4. FLEETS & GESTURES ============ -->
+<section>
+  <h2>6 · Fleets & drag gesture</h2>
+  <div class="card grain"><canvas id="cvGesture" width="1720" height="520"></canvas></div>
+</section>
+
+<!-- ============ 5. DOM CHROME ============ -->
+<section>
+  <h2>7 · DOM chrome</h2>
+  <div class="chrome-grid">
+    <div class="card grain">
+      <div class="lbl">Buttons & controls</div>
+      <div class="row-gap" style="justify-content:flex-start;">
+        <button class="btn">Start</button>
+        <button class="btn secondary">Replay seed</button>
+        <button class="round">❚❚</button>
+        <button class="chip-pill">Send 50%</button>
+      </div>
+      <div class="lbl">Segmented control</div>
+      <div class="seg">
+        <button>Easy</button><button class="active">Medium</button><button>Hard</button>
+      </div>
+      <div class="lbl">Seed input</div>
+      <input type="text" placeholder="random" inputmode="numeric">
+      <div class="lbl">Spec picker</div>
+      <div class="spec-picker">
+        <div class="spec-cost">Specialise — costs 15 ships</div>
+        <div class="spec-row">
+          <button class="spec-opt sel" title="Standard">◯</button>
+          <button class="spec-opt" title="Defence">▲</button>
+          <button class="spec-opt" title="Naval">◆</button>
+          <button class="spec-opt" title="Economy">▮</button>
+        </div>
+      </div>
+    </div>
+    <div class="card grain" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="overlay-demo grain">
+        <h3 class="victory">Victory</h3>
+        <p class="os">Skirmish complete</p>
+        <ul>
+          <li><b>7:42</b> elapsed · <b>214</b> ships built · <b>9</b> planets held</li>
+        </ul>
+        <div class="row-gap">
+          <button class="btn secondary">Replay seed</button>
+          <button class="btn">New game</button>
+        </div>
+      </div>
+      <div class="overlay-demo grain" style="padding:18px;">
+        <h3 style="font-size:20px;">Paused</h3>
+        <p class="os" style="margin-bottom:12px;">Production, fleets and AI are frozen</p>
+        <button class="btn">Resume</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+(function(){
+"use strict";
+const C = {
+  bg:'#0d2015', raise:'#112b1d', line:'#1d4530', lineDim:'#173a28',
+  txt:'#eafff0', dim:'#9db8a8', ink:'#0d1420',
+  owners:{
+    player:{fill:'#7df0a5', hi:'#a9ffcb', name:'Player', grad:['#a9ffcb','#5ad98a']},
+    enemy:{fill:'#d94a97', hi:'#f08ac2', name:'AI 1 · Magenta', grad:['#8b7cf7','#d94a97']},
+    ai2:{fill:'#f2b04e', hi:'#ffd08a', name:'AI 2 · Amber', grad:['#ffd08a','#e09a30']},
+    ai3:{fill:'#6fb8f0', hi:'#a8d8ff', name:'AI 3 · Ice', grad:['#a8d8ff','#4f9ede']},
+    neutral:{fill:'#57806b', hi:'#6a9480', name:'Neutral', grad:['#6a9480','#3c5f4d']}
+  }
+};
+function hexA(hex,a){const n=parseInt(hex.slice(1),16);return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`;}
+
+/* ---- swatches (DOM) ---- */
+const swEl = document.getElementById('swatches');
+const coreSw = [['Background','#0d2015'],['Raised','#112b1d'],['Contour line','#1d4530'],['Text','#eafff0'],['Text dim','#9db8a8'],['Ink (on fills)','#0d1420']];
+coreSw.forEach(([n,h])=>{
+  swEl.insertAdjacentHTML('beforeend',
+    `<div class="sw"><div class="chip" style="background:${h}; border:1px solid var(--line);"></div><div class="nm">${n}</div><div class="hx">${h}</div></div>`);
+});
+Object.values(C.owners).forEach(o=>{
+  swEl.insertAdjacentHTML('beforeend',
+    `<div class="sw"><div class="chip" style="background:linear-gradient(135deg,${o.grad[0]},${o.grad[1]});"></div><div class="nm">${o.name}</div><div class="hx">${o.fill} / ${o.hi}</div></div>`);
+});
+
+/* ---- canvas helpers ---- */
+function grainify(g,w,h){
+  if(!grainify.p){
+    const gc=document.createElement('canvas'); gc.width=gc.height=140;
+    const x=gc.getContext('2d'); const im=x.createImageData(140,140);
+    for(let i=0;i<im.data.length;i+=4){const v=Math.random()*255;
+      im.data[i]=im.data[i+1]=im.data[i+2]=v; im.data[i+3]=22;}
+    x.putImageData(im,0,0); grainify.p=g.createPattern(gc,'repeat');
+  }
+  g.save(); g.fillStyle=grainify.p; g.fillRect(0,0,w,h); g.restore();
+}
+function contours(g,w,h,seed){
+  g.lineWidth=2.5;
+  const anchors=[[w*.2,h*.4,3],[w*.8,h*.6,3]];
+  anchors.forEach(([ax,ay,rings],ai)=>{
+    for(let k=1;k<=rings;k++){
+      g.strokeStyle = k%2 ? C.line : C.lineDim;
+      g.beginPath();
+      for(let a=0;a<=6.3;a+=.08){
+        const r=90*k + 22*Math.sin(a*3+ai+seed+k) + 14*Math.sin(a*5+k);
+        const px=ax+Math.cos(a)*r, py=ay+Math.sin(a)*r*.8;
+        a===0?g.moveTo(px,py):g.lineTo(px,py);
+      }
+      g.closePath(); g.stroke();
+    }
+  });
+}
+function base(g,w,h,seed){ g.fillStyle=C.bg; g.fillRect(0,0,w,h); contours(g,w,h,seed||0); }
+function label(g,txt,x,y){ g.fillStyle=C.dim; g.font='500 22px "Space Grotesk"'; g.textAlign='center'; g.textBaseline='alphabetic'; g.fillText(txt,x,y); }
+function halo(g,txt,x,y,size,fill){
+  g.font=`700 ${size}px "Space Grotesk"`; g.textAlign='center'; g.textBaseline='middle';
+  g.lineWidth=size/6; g.strokeStyle=C.bg; g.strokeText(txt,x,y);
+  g.fillStyle=fill||C.txt; g.fillText(txt,x,y);
+}
+function planet(g,x,y,r,ownerKey,opts){
+  opts=opts||{};
+  const o=C.owners[ownerKey];
+  // glow
+  const glowA = ownerKey==='player'?.5 : ownerKey==='neutral'?.22 : .38;
+  const halo1=g.createRadialGradient(x,y,r*.5,x,y,r*2);
+  halo1.addColorStop(0,hexA(o.fill,glowA)); halo1.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=halo1; g.beginPath(); g.arc(x,y,r*2,0,6.283); g.fill();
+  // zone ring
+  if(opts.zone){
+    g.strokeStyle=hexA(o.fill,.45); g.lineWidth=2.5; g.setLineDash([3,8]);
+    g.beginPath(); g.arc(x,y,r*1.9,0,6.283); g.stroke(); g.setLineDash([]);
+  }
+  // body gradient (shape-aware: circle | hex | ring | square)
+  const shape=opts.shape||'circle';
+  const bg=g.createLinearGradient(x-r,y-r,x+r,y+r);
+  bg.addColorStop(0,o.grad[0]); bg.addColorStop(1,o.grad[1]);
+  g.fillStyle=bg;
+  g.beginPath();
+  if(shape==='hex'){
+    for(let i=0;i<6;i++){const a=-Math.PI/2+i*Math.PI/3;
+      const px=x+Math.cos(a)*r*1.08, py=y+Math.sin(a)*r*1.08;
+      i===0?g.moveTo(px,py):g.lineTo(px,py);}
+    g.closePath();
+  } else if(shape==='square'){
+    const s=r*.92;
+    g.roundRect(x-s,y-s,s*2,s*2,r*.34);
+  } else {
+    g.arc(x,y,r,0,6.283);
+  }
+  g.fill();
+  if(shape==='ring'){
+    g.strokeStyle=hexA(o.hi,.9); g.lineWidth=6;
+    g.beginPath(); g.ellipse(x,y,r*1.6,r*.52,-.35,0,6.283); g.stroke();
+    g.strokeStyle=hexA(C.bg,.6); g.lineWidth=1.5;
+    g.beginPath(); g.ellipse(x,y,r*1.6,r*.52,-.35,0,6.283); g.stroke();
+  }
+  // selection
+  if(opts.selected){
+    g.strokeStyle=C.txt; g.lineWidth=3;
+    g.beginPath(); g.arc(x,y,r+9,0,6.283); g.stroke();
+  }
+  // flash / pulse (0..1 progress)
+  if(opts.flash!=null){
+    g.strokeStyle=hexA('#ffffff',1-opts.flash); g.lineWidth=5;
+    g.beginPath(); g.arc(x,y,r+opts.flash*34,0,6.283); g.stroke();
+  }
+  if(opts.pulse!=null){
+    g.strokeStyle=hexA(o.hi,1-opts.pulse); g.lineWidth=2.5;
+    g.beginPath(); g.arc(x,y,r+opts.pulse*22,0,6.283); g.stroke();
+  }
+  // level pips upper rim
+  if(opts.pips){
+    const step=.42, start=-Math.PI/2-((opts.pips-1)/2)*step;
+    g.fillStyle=C.txt;
+    for(let i=0;i<opts.pips;i++){
+      const a=start+i*step;
+      g.beginPath(); g.arc(x+Math.cos(a)*(r+7),y+Math.sin(a)*(r+7),4,0,6.283); g.fill();
+    }
+  }
+  // spec glyph lower rim (white, stroked for grain survival)
+  if(opts.spec){
+    const gy=y+r*.62; g.fillStyle='#ffffff'; g.strokeStyle=C.bg; g.lineWidth=2;
+    if(opts.spec==='defence'){ // triangle
+      g.beginPath(); g.moveTo(x,gy-8); g.lineTo(x+8,gy+6); g.lineTo(x-8,gy+6); g.closePath(); g.fill(); g.stroke();
+    } else if(opts.spec==='naval'){ // diamond
+      g.beginPath(); g.moveTo(x,gy-8); g.lineTo(x+8,gy); g.lineTo(x,gy+8); g.lineTo(x-8,gy); g.closePath(); g.fill(); g.stroke();
+    } else { // economy bar
+      g.fillRect(x-4,gy-8,8,16); g.strokeRect(x-4,gy-8,8,16);
+    }
+  }
+  if(opts.count!=null) halo(g,String(opts.count),x,y,Math.max(20,r*.72));
+}
+function dart(g,x,y,ang,ownerKey,count){
+  const o=C.owners[ownerKey];
+  g.save(); g.translate(x,y); g.rotate(ang);
+  g.shadowColor=o.fill; g.shadowBlur=14;
+  g.fillStyle=o.hi;
+  g.beginPath(); g.moveTo(15,0); g.lineTo(-10,9); g.lineTo(-5,0); g.lineTo(-10,-9); g.closePath(); g.fill();
+  g.restore();
+  if(count!=null) halo(g,String(count),x,y-24,20);
+}
+
+/* ---- 3: owners × sizes grid ---- */
+const grid = document.getElementById('cvGrid').getContext('2d');
+function drawGrid(){
+  const w=1720,h=1080;
+  base(grid,w,h,1);
+  const owners=['player','enemy','ai2','ai3','neutral'];
+  const sizes=[[34,'Small'],[52,'Medium'],[72,'Large']];
+  owners.forEach((ok,r)=>{
+    const y=130+r*200;
+    grid.textAlign='left'; grid.fillStyle=C.dim; grid.font='500 24px "Space Grotesk"';
+    grid.fillText(C.owners[ok].name, 50, y+8);
+    sizes.forEach(([rad,nm],ci)=>{
+      const x=560+ci*420;
+      planet(grid,x,y,rad,ok,{count:[12,28,64][ci]});
+      if(r===0){ label(grid,nm,x,44); grid.textAlign='left'; }
+    });
+  });
+  grainify(grid,w,h);
+}
+
+/* ---- 4: shape experiment (animated) ---- */
+const st = document.getElementById('cvStates').getContext('2d');
+function drawStates(t){
+  const w=1720,h=1150;
+  base(st,w,h,2);
+  const cyc=(t%1.6)/1.6;
+  const r=56;
+  // Row 1 — spec as silhouette (player)
+  const y1=180;
+  [['Standard — circle','circle'],['Defence — hex','hex'],['Naval — ring','ring'],['Economy — square','square']]
+  .forEach(([nm,shape],i)=>{
+    const x=240+i*430;
+    planet(st,x,y1,r,'player',{shape,count:24});
+    label(st,nm,x,y1+150);
+  });
+  // Row 2 — composability across owners: pips, zone, selection still work
+  const y2=540;
+  const row2=[
+    ['Enemy hex + zone + L3', ()=>planet(st,240,y2,r,'enemy',{shape:'hex',zone:true,pips:3,count:30})],
+    ['Amber ring + L2', ()=>planet(st,670,y2,r,'ai2',{shape:'ring',pips:2,count:18})],
+    ['Ice square + selected', ()=>planet(st,1100,y2,r,'ai3',{shape:'square',selected:true,count:12})],
+    ['Neutral circle', ()=>planet(st,1500,y2,48,'neutral',{count:14})]
+  ];
+  row2.forEach(([nm,fn],i)=>{fn(); label(st,nm,[240,670,1100,1500][i],y2+160);});
+  // Row 3 — animated states + level pips on new shapes
+  const y3=900;
+  planet(st,240,y3,r,'player',{shape:'hex',flash:cyc,count:24});
+  label(st,'Capture flash',240,y3+150);
+  planet(st,670,y3,r,'player',{shape:'ring',pulse:cyc,pips:2,count:24});
+  label(st,'Level-up pulse',670,y3+150);
+  planet(st,1060,y3,34,'player',{pips:1,count:8});
+  planet(st,1160,y3,38,'player',{pips:2,count:16});
+  planet(st,1270,y3,42,'player',{pips:3,count:32});
+  label(st,'Level pips 1–3',1160,y3+150);
+  planet(st,1560,y3,r,'player',{shape:'square',selected:true,count:24});
+  label(st,'Selection',1560,y3+150);
+  grainify(st,w,h);
+}
+
+/* ---- 5: effects (animated) ---- */
+const fx = document.getElementById('cvFx').getContext('2d');
+function drawFx(t){
+  const w=1720,h=460; base(fx,w,h,3);
+  const y=210;
+  // Tracer: pulse traveling from planet edge outward
+  {
+    const x=240; planet(fx,x,y,44,'enemy',{zone:true,count:30});
+    const tt=(t%1)/1;
+    const ex=x+Math.cos(-.6)*160, ey=y+Math.sin(-.6)*160;
+    fx.strokeStyle=hexA(C.owners.enemy.fill,.85); fx.lineWidth=3;
+    const px=x+(ex-x)*tt, py=y+(ey-y)*tt;
+    fx.beginPath(); fx.moveTo(x+(ex-x)*Math.max(0,tt-.25), y+(ey-y)*Math.max(0,tt-.25)); fx.lineTo(px,py); fx.stroke();
+    dart(fx,ex,ey,2.2,'player',18);
+    label(fx,'Zone tracer',x,y+140);
+  }
+  // Siege pool: orbiting attacker dots + pool count
+  {
+    const x=680; planet(fx,x,y,44,'ai2',{count:22});
+    fx.fillStyle=C.owners.player.fill;
+    for(let i=0;i<5;i++){
+      const a=t*1.4+i*1.257;
+      fx.beginPath(); fx.arc(x+Math.cos(a)*82,y+Math.sin(a)*82,6,0,6.283); fx.fill();
+    }
+    halo(fx,'37',x+95,y-80,24,C.owners.player.hi);
+    label(fx,'Siege pool',x,y+140);
+  }
+  // Battle hit sparks
+  {
+    const x=1120; planet(fx,x,y,44,'ai3',{count:14});
+    const tt=(t%.7)/.7;
+    fx.strokeStyle=hexA('#ffffff',1-tt); fx.lineWidth=3;
+    for(let i=0;i<3;i++){
+      const a=i*2.1+.5;
+      const rr=50+tt*26;
+      fx.beginPath(); fx.arc(x+Math.cos(a)*rr*.2, y+Math.sin(a)*rr*.2, rr, a-.25, a+.25); fx.stroke();
+    }
+    label(fx,'Battle hits',x,y+140);
+  }
+  // Arrival poof
+  {
+    const x=1500; planet(fx,x,y,44,'player',{count:52});
+    const tt=(t%1.2)/1.2;
+    fx.strokeStyle=hexA(C.owners.player.hi,1-tt); fx.lineWidth=4;
+    fx.beginPath(); fx.arc(x,y,44+tt*44,0,6.283); fx.stroke();
+    label(fx,'Arrival poof',x,y+140);
+  }
+  grainify(fx,w,h);
+}
+
+/* ---- 6: gesture demo (animated) ---- */
+const ge = document.getElementById('cvGesture').getContext('2d');
+function drawGesture(t){
+  const w=1720,h=520; base(ge,w,h,4);
+  const sx=260,sy=280, tx2=1500,ty2=200;
+  const mzx=880,mzy=250,mzr=150; // hostile zone crossing
+  // hostile planet w/ zone
+  planet(ge,mzx,mzy,46,'enemy',{zone:false,count:26});
+  ge.strokeStyle=hexA(C.owners.enemy.fill,.45); ge.lineWidth=2.5; ge.setLineDash([3,8]);
+  ge.beginPath(); ge.arc(mzx,mzy,mzr,0,6.283); ge.stroke(); ge.setLineDash([]);
+  // source + target
+  planet(ge,sx,sy,52,'player',{selected:true,count:48});
+  planet(ge,tx2,ty2,44,'ai3',{count:9});
+  // dashed drag line
+  ge.strokeStyle=hexA(C.owners.player.fill,.8); ge.lineWidth=3.5; ge.setLineDash([4,14]);
+  ge.lineDashOffset = -t*40;
+  ge.beginPath(); ge.moveTo(sx,sy); ge.lineTo(tx2,ty2); ge.stroke();
+  ge.setLineDash([]); ge.lineDashOffset=0;
+  // hostile stretch: solid hot overdraw inside enemy zone
+  const dx=tx2-sx, dy=ty2-sy, len=Math.hypot(dx,dy);
+  const fx2=(mzx-sx)*dx/len/len+(mzy-sy)*dy/len/len; // param of closest pt (approx via projection)
+  const proj=((mzx-sx)*dx+(mzy-sy)*dy)/(len*len);
+  const cx=sx+dx*proj, cy=sy+dy*proj;
+  const dToLine=Math.hypot(mzx-cx,mzy-cy);
+  if(dToLine<mzr){
+    const half=Math.sqrt(mzr*mzr-dToLine*dToLine)/len;
+    const a=Math.max(0,proj-half), b=Math.min(1,proj+half);
+    ge.strokeStyle=C.owners.enemy.fill; ge.lineWidth=5;
+    ge.beginPath(); ge.moveTo(sx+dx*a,sy+dy*a); ge.lineTo(sx+dx*b,sy+dy*b); ge.stroke();
+  }
+  // snap circle + estimate
+  ge.strokeStyle=C.txt; ge.lineWidth=2.5;
+  ge.beginPath(); ge.arc(tx2,ty2,58,0,6.283); ge.stroke();
+  halo(ge,'~12',tx2,ty2-88,26,C.owners.player.hi);
+  // in-flight dart
+  const p=(t*.25)%1;
+  dart(ge, sx+dx*p, sy+dy*p, Math.atan2(dy,dx), 'player', 24);
+  label(ge,'Drag gesture — dashed route, hostile-stretch overdraw, snap ring, outcome estimate', w/2, h-36);
+  grainify(ge,w,h);
+}
+
+/* ---- loop ---- */
+drawGrid();
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+function frame(now){
+  const t=now/1000;
+  drawStates(t); drawFx(t); drawGesture(t);
+  if(!reduce) requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
