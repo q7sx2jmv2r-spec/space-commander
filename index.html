@@ -6,8 +6,11 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#0b0e1a">
+  <meta name="theme-color" content="#0d2015">
   <title>Space Commander</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
     :root {
       /* Mirrored into JS by render.ts (worldTransform) — env() is only
@@ -16,20 +19,30 @@
       --sai-right: env(safe-area-inset-right, 0px);
       --sai-bottom: env(safe-area-inset-bottom, 0px);
       --sai-left: env(safe-area-inset-left, 0px);
-      --panel: #141a30;
-      --panel-line: #2a3150;
-      --text: #e8ecff;
-      --dim: #8b93b8;
-      --accent: #4da6ff;
+      /* Contour tokens (QUA-127) — mirrored by hand from src/theme.ts; keep
+         the two in sync. Source of truth: docs/contour-design-system.html. */
+      --bg: #0d2015;
+      --bg-raise: #112b1d;
+      --line: #1d4530;
+      --line-dim: #173a28;
+      --txt: #eafff0;
+      --txt-dim: #9db8a8;
+      --ink: #0d1420;
+      --player: #7df0a5;
+      --player-hi: #a9ffcb;
+      --enemy: #d94a97;
+      --ai2: #f2b04e;
+      --ai3: #6fb8f0;
+      --neutral: #57806b;
     }
     html, body {
       margin: 0;
       padding: 0;
       height: 100%;
       overflow: hidden;
-      background: #0b0e1a;
-      color: var(--text);
-      font-family: system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--txt);
+      font-family: "Space Grotesk", system-ui, sans-serif;
       /* No pull-to-refresh / rubber-band scrolling */
       overscroll-behavior: none;
       /* No long-press text selection or callouts */
@@ -61,7 +74,7 @@
       display: flex;
       align-items: flex-end; /* bottom sheet: one-handed reach */
       justify-content: center;
-      background: rgba(11, 14, 26, 0.82);
+      background: rgba(13, 32, 21, 0.82);
       z-index: 10;
       padding:
         calc(var(--sai-top) + 12px)
@@ -70,30 +83,43 @@
         calc(var(--sai-left) + 12px);
     }
     .panel {
-      background: var(--panel);
-      border: 1px solid var(--panel-line);
-      border-radius: 18px;
+      background: var(--bg-raise);
+      border: 1px solid var(--line);
+      border-radius: 16px;
       padding: 20px;
       width: 100%;
       max-width: 420px;
       box-sizing: border-box;
       margin-bottom: 4vh;
     }
+    /* Film-grain treatment on raised surfaces (QUA-127). */
+    .panel, #specPicker { position: relative; }
+    .panel::after, #specPicker::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: inherit;
+      opacity: 0.35;
+      mix-blend-mode: overlay;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+    }
     .panel h1 {
       margin: 0 0 4px;
       font-size: 24px;
       letter-spacing: 0.04em;
     }
-    .panel h2 { margin: 0 0 16px; font-size: 15px; color: var(--dim); font-weight: normal; }
+    .panel h2 { margin: 0 0 16px; font-size: 15px; color: var(--txt-dim); font-weight: normal; }
     .row { margin: 14px 0; }
     .row label {
       display: block;
       font-size: 13px;
-      color: var(--dim);
+      color: var(--txt-dim);
       margin-bottom: 6px;
       text-transform: uppercase;
       letter-spacing: 0.08em;
     }
+    button { font-family: inherit; }
     .seg {
       display: flex;
       gap: 8px;
@@ -101,45 +127,53 @@
     .seg button {
       flex: 1;
       min-height: 48px;
-      font-size: 16px;
-      color: var(--text);
-      background: #0e1326;
-      border: 1px solid var(--panel-line);
-      border-radius: 12px;
+      font-size: 15px;
+      font-weight: 500;
+      color: var(--txt-dim);
+      background: var(--bg);
+      border: 1.5px solid var(--line);
+      border-radius: 11px;
     }
     .seg button.active {
-      border-color: var(--accent);
-      color: var(--accent);
-      background: #10203a;
+      border-color: var(--player);
+      color: var(--ink);
+      background: var(--player);
+      font-weight: 700;
     }
     #seed {
       width: 100%;
       min-height: 48px;
       box-sizing: border-box;
-      background: #0e1326;
-      border: 1px solid var(--panel-line);
-      border-radius: 12px;
-      color: var(--text);
+      background: var(--bg);
+      border: 1.5px solid var(--line);
+      border-radius: 10px;
+      color: var(--txt);
+      font-family: inherit;
       font-size: 16px;
       padding: 0 14px;
       -webkit-user-select: text;
       user-select: text;
     }
+    #seed::placeholder { color: var(--txt-dim); }
+    #seed:focus { outline: none; border-color: var(--player); }
     .big {
       width: 100%;
       min-height: 56px;
       font-size: 18px;
-      font-weight: bold;
-      color: #06101f;
-      background: var(--accent);
+      font-weight: 700;
+      color: var(--ink);
+      background: var(--player);
       border: none;
-      border-radius: 14px;
+      border-radius: 12px;
       margin-top: 6px;
+      box-shadow: 0 0 18px rgba(125, 240, 165, 0.35);
     }
+    .big:active { transform: translateY(1px); }
     .big.secondary {
       background: transparent;
-      color: var(--accent);
-      border: 1px solid var(--accent);
+      color: var(--txt);
+      border: 1.5px solid var(--line);
+      box-shadow: none;
     }
     button { touch-action: manipulation; }
 
@@ -148,13 +182,13 @@
       top: calc(var(--sai-top) + 10px);
       right: calc(var(--sai-right) + 10px);
       z-index: 5;
-      min-width: 48px;
-      min-height: 48px;
-      font-size: 20px;
-      color: var(--dim);
-      background: rgba(20, 26, 48, 0.8);
-      border: 1px solid var(--panel-line);
-      border-radius: 12px;
+      width: 48px;
+      height: 48px;
+      font-size: 16px;
+      color: var(--txt);
+      background: rgba(17, 43, 29, 0.85);
+      border: 1.5px solid var(--line);
+      border-radius: 50%;
     }
 
     /* --- QUA-131 in-game HUD: send-fraction chip, spec button, type picker --- */
@@ -167,11 +201,11 @@
       min-width: 76px;
       min-height: 48px;
       font-size: 17px;
-      font-weight: bold;
-      color: var(--accent);
-      background: rgba(20, 26, 48, 0.85);
-      border: 1px solid var(--accent);
-      border-radius: 24px;
+      font-weight: 700;
+      color: var(--player);
+      background: rgba(125, 240, 165, 0.12);
+      border: 1.5px solid var(--player);
+      border-radius: 999px;
     }
     #specBtn {
       position: fixed;
@@ -179,29 +213,29 @@
       width: 44px;
       height: 44px;
       font-size: 20px;
-      color: var(--text);
-      background: rgba(20, 26, 48, 0.85);
-      border: 1px solid var(--panel-line);
-      border-radius: 22px;
+      color: var(--txt);
+      background: rgba(17, 43, 29, 0.85);
+      border: 1.5px solid var(--line);
+      border-radius: 50%;
       padding: 0;
     }
     #specPicker {
       position: fixed;
       z-index: 6;
-      background: var(--panel);
-      border: 1px solid var(--panel-line);
+      background: var(--bg);
+      border: 1px solid var(--line);
       border-radius: 14px;
-      padding: 8px;
+      padding: 10px;
     }
     #specPickerCost {
       font-size: 12px;
-      color: var(--dim);
+      color: var(--txt-dim);
       text-align: center;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
     }
     #specPickerRow {
       display: flex;
-      gap: 6px;
+      gap: 8px;
     }
     #specPickerRow button {
       min-width: 52px;
@@ -212,26 +246,27 @@
       justify-content: center;
       gap: 2px;
       font-size: 12px;
-      color: var(--text);
-      background: #0e1326;
-      border: 1px solid var(--panel-line);
+      color: var(--txt);
+      background: var(--bg-raise);
+      border: 1.5px solid var(--line);
       border-radius: 12px;
     }
-    #specPickerRow button .glyph { font-size: 16px; }
+    #specPickerRow button .glyph { font-size: 16px; line-height: 0; }
+    #specPickerRow button .glyph svg { display: block; }
     #specPickerRow button:disabled { opacity: 0.4; }
 
     #pauseOverlay .panel { text-align: center; }
-    #endTitle.victory { color: var(--accent); }
-    #endTitle.defeat { color: #ff5d5d; }
+    #endTitle.victory { color: var(--player); }
+    #endTitle.defeat { color: var(--enemy); }
     #endStats { list-style: none; margin: 0 0 10px; padding: 0; }
     #endStats li {
       display: flex;
       justify-content: space-between;
       padding: 7px 0;
-      border-bottom: 1px solid var(--panel-line);
+      border-bottom: 1px solid var(--line);
       font-size: 15px;
     }
-    #endStats li span:first-child { color: var(--dim); }
+    #endStats li span:first-child { color: var(--txt-dim); }
   </style>
 </head>
 <body>
